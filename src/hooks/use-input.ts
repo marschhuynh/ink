@@ -76,6 +76,8 @@ export type Key = {
 	[Meta key](https://en.wikipedia.org/wiki/Meta_key) was pressed.
 	*/
 	meta: boolean;
+
+	raw: string | undefined;
 };
 
 type Handler = (input: string, key: Key) => void;
@@ -149,6 +151,7 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
 				tab: keypress.name === 'tab',
 				backspace: keypress.name === 'backspace',
 				delete: keypress.name === 'delete',
+				raw: keypress.raw,
 				// `parseKeypress` parses \u001B\u001B[A (meta + up arrow) as meta = false
 				// but with option = true, so we need to take this into account here
 				// to avoid breaking changes in Ink.
