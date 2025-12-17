@@ -1,6 +1,6 @@
 {
-	"name": "ink",
-	"version": "6.5.1-box-1",
+	"name": "@nuvin/ink",
+	"version": "6.5.5",
 	"description": "React for CLI",
 	"license": "MIT",
 	"repository": "marschhuynh/ink",
