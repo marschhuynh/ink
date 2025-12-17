@@ -123,8 +123,21 @@ test('BoxRef - getScrollPosition returns current position', t => {
 		}, []);
 
 		return (
-			<Box ref={boxReference} width={20} height={10} overflow="scroll">
-				<Text>Content</Text>
+			<Box
+				ref={boxReference}
+				width={10}
+				height={3}
+				overflow="scroll"
+				flexDirection="column"
+			>
+				<Box width={20} flexShrink={0}>
+					<Text>Very long content here</Text>
+				</Box>
+				{Array.from({length: 15}, (_, i) => (
+					<Box key={i} flexShrink={0}>
+						<Text>Line {i}</Text>
+					</Box>
+				))}
 			</Box>
 		);
 	}
@@ -313,8 +326,21 @@ test('BoxRef - partial scrollTo updates only specified axis', t => {
 		}, []);
 
 		return (
-			<Box ref={boxReference} width={20} height={10} overflow="scroll">
-				<Text>Content</Text>
+			<Box
+				ref={boxReference}
+				width={10}
+				height={3}
+				overflow="scroll"
+				flexDirection="column"
+			>
+				<Box width={20} flexShrink={0}>
+					<Text>Very long content here</Text>
+				</Box>
+				{Array.from({length: 30}, (_, i) => (
+					<Box key={i} flexShrink={0}>
+						<Text>Line {i}</Text>
+					</Box>
+				))}
 			</Box>
 		);
 	}
@@ -415,4 +441,78 @@ test('BoxRef - scrollToBottom scrolls to max y', async t => {
 	t.true(output.includes('Line 8'));
 	t.true(output.includes('Line 9'));
 	t.false(output.includes('Line 0'));
+});
+
+test('BoxRef - scrollTo clamps to valid range', t => {
+	const stdout = createStdout(100);
+	let capturedPosition: {x: number; y: number} | undefined;
+
+	function TestComponent() {
+		const boxReference = useRef<BoxRef>(null);
+
+		useEffect(() => {
+			if (boxReference.current) {
+				boxReference.current.scrollTo({x: 1000, y: 1000});
+				capturedPosition = boxReference.current.getScrollPosition();
+			}
+		}, []);
+
+		return (
+			<Box
+				ref={boxReference}
+				width={10}
+				height={3}
+				overflow="scroll"
+				flexDirection="column"
+			>
+				{Array.from({length: 10}, (_, i) => (
+					<Box key={i} flexShrink={0}>
+						<Text>Line {i}</Text>
+					</Box>
+				))}
+			</Box>
+		);
+	}
+
+	render(<TestComponent />, {stdout, debug: true});
+
+	t.is(capturedPosition?.x, 0);
+	t.is(capturedPosition?.y, 7);
+});
+
+test('BoxRef - scrollTo clamps negative values to zero', t => {
+	const stdout = createStdout(100);
+	let capturedPosition: {x: number; y: number} | undefined;
+
+	function TestComponent() {
+		const boxReference = useRef<BoxRef>(null);
+
+		useEffect(() => {
+			if (boxReference.current) {
+				boxReference.current.scrollTo({x: -10, y: -10});
+				capturedPosition = boxReference.current.getScrollPosition();
+			}
+		}, []);
+
+		return (
+			<Box
+				ref={boxReference}
+				width={10}
+				height={3}
+				overflow="scroll"
+				flexDirection="column"
+			>
+				{Array.from({length: 10}, (_, i) => (
+					<Box key={i} flexShrink={0}>
+						<Text>Line {i}</Text>
+					</Box>
+				))}
+			</Box>
+		);
+	}
+
+	render(<TestComponent />, {stdout, debug: true});
+
+	t.is(capturedPosition?.x, 0);
+	t.is(capturedPosition?.y, 0);
 });
