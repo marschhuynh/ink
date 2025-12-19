@@ -14,7 +14,27 @@ export type Styles = {
 		| 'truncate-middle'
 		| 'truncate-start';
 
-	readonly position?: 'absolute' | 'relative';
+	readonly position?: 'absolute' | 'relative' | 'sticky';
+
+	/**
+	Top offset. Used with position="absolute" or position="sticky".
+	*/
+	readonly top?: number;
+
+	/**
+	Bottom offset. Used with position="absolute" or position="sticky".
+	*/
+	readonly bottom?: number;
+
+	/**
+	Left offset. Used with position="absolute" or position="sticky".
+	*/
+	readonly left?: number;
+
+	/**
+	Right offset. Used with position="absolute" or position="sticky".
+	*/
+	readonly right?: number;
 
 	/**
 	Size of the gap between an element's columns.
@@ -176,6 +196,16 @@ export type Styles = {
 	readonly minHeight?: number | string;
 
 	/**
+	Sets a maximum height of the element.
+	*/
+	readonly maxHeight?: number | string;
+
+	/**
+	Sets a maximum width of the element.
+	*/
+	readonly maxWidth?: number | string;
+
+	/**
 	Set this property to `none` to hide the element.
 	*/
 	readonly display?: 'flex' | 'none';
@@ -278,21 +308,21 @@ export type Styles = {
 	
 	@default 'visible'
 	*/
-	readonly overflow?: 'visible' | 'hidden';
+	readonly overflow?: 'visible' | 'hidden' | 'scroll';
 
 	/**
 	Behavior for an element's overflow in the horizontal direction.
 
 	@default 'visible'
 	*/
-	readonly overflowX?: 'visible' | 'hidden';
+	readonly overflowX?: 'visible' | 'hidden' | 'scroll';
 
 	/**
 	Behavior for an element's overflow in the vertical direction.
 
 	@default 'visible'
 	*/
-	readonly overflowY?: 'visible' | 'hidden';
+	readonly overflowY?: 'visible' | 'hidden' | 'scroll';
 
 	/**
 	Background color for the element.
@@ -523,6 +553,22 @@ const applyDimensionStyles = (node: YogaNode, style: Styles): void => {
 			node.setMinHeightPercent(Number.parseInt(style.minHeight, 10));
 		} else {
 			node.setMinHeight(style.minHeight ?? 0);
+		}
+	}
+
+	if ('maxWidth' in style) {
+		if (typeof style.maxWidth === 'string') {
+			node.setMaxWidthPercent(Number.parseInt(style.maxWidth, 10));
+		} else {
+			node.setMaxWidth(style.maxWidth ?? 0);
+		}
+	}
+
+	if ('maxHeight' in style) {
+		if (typeof style.maxHeight === 'string') {
+			node.setMaxHeightPercent(Number.parseInt(style.maxHeight, 10));
+		} else {
+			node.setMaxHeight(style.maxHeight ?? 0);
 		}
 	}
 };
