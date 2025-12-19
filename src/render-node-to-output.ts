@@ -383,7 +383,13 @@ const renderNodeToOutput = (
 			const childParentTop = y;
 			const childParentBottom = y + nodeHeight;
 
-			for (const childNode of node.childNodes) {
+			const sortedChildren = [...node.childNodes].sort((a, b) => {
+				const aZ = (a as DOMElement).style?.zIndex ?? 0;
+				const bZ = (b as DOMElement).style?.zIndex ?? 0;
+				return aZ - bZ;
+			});
+
+			for (const childNode of sortedChildren) {
 				renderNodeToOutput(childNode as DOMElement, output, {
 					offsetX: x - scrollOffset.x,
 					offsetY: y - scrollOffset.y,
