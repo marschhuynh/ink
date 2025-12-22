@@ -48,6 +48,37 @@ type UnclipOperation = {
 	type: 'unclip';
 };
 
+const intersectClips = (clips: Clip[]): Clip | undefined => {
+	if (clips.length === 0) {
+		return undefined;
+	}
+
+	let x1: number | undefined;
+	let x2: number | undefined;
+	let y1: number | undefined;
+	let y2: number | undefined;
+
+	for (const c of clips) {
+		if (c.x1 !== undefined) {
+			x1 = x1 === undefined ? c.x1 : Math.max(x1, c.x1);
+		}
+
+		if (c.x2 !== undefined) {
+			x2 = x2 === undefined ? c.x2 : Math.min(x2, c.x2);
+		}
+
+		if (c.y1 !== undefined) {
+			y1 = y1 === undefined ? c.y1 : Math.max(y1, c.y1);
+		}
+
+		if (c.y2 !== undefined) {
+			y2 = y2 === undefined ? c.y2 : Math.min(y2, c.y2);
+		}
+	}
+
+	return {x1, x2, y1, y2};
+};
+
 export default class Output {
 	width: number;
 	height: number;
@@ -130,7 +161,7 @@ export default class Output {
 				let {x, y} = operation;
 				let lines = text.split('\n');
 
-				const clip = clips.at(-1);
+				const clip = intersectClips(clips);
 
 				if (clip) {
 					const clipHorizontally =

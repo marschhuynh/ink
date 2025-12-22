@@ -502,6 +502,86 @@ test('nested overflow', t => {
 	t.is(output, 'AA\nBB\nXXXX\nYYYY\n');
 });
 
+test('nested overflow - inner content clipped by outer container', t => {
+	const output = renderToString(
+		<Box width={6} height={3} overflow="hidden" flexDirection="column">
+			<Box height={5} overflow="hidden" flexShrink={0}>
+				<Box flexShrink={0}>
+					<Text>
+						Line1{'\n'}Line2{'\n'}Line3{'\n'}Line4{'\n'}Line5
+					</Text>
+				</Box>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, 'Line1\nLine2\nLine3');
+});
+
+test('nested overflow - multiple nested containers clip intersection', t => {
+	const output = renderToString(
+		<Box width={10} height={4} overflow="hidden" flexDirection="column">
+			<Box height={6} overflow="hidden" flexDirection="column" flexShrink={0}>
+				<Box height={8} overflow="hidden" flexShrink={0}>
+					<Text>
+						Row1{'\n'}Row2{'\n'}Row3{'\n'}Row4{'\n'}Row5{'\n'}Row6{'\n'}Row7
+						{'\n'}Row8
+					</Text>
+				</Box>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, 'Row1\nRow2\nRow3\nRow4');
+});
+
+test('nested overflow - horizontal and vertical clip intersection', t => {
+	const output = renderToString(
+		<Box width={4} height={2} overflow="hidden">
+			<Box width={6} height={4} overflow="hidden" flexShrink={0}>
+				<Text>
+					AAAAAA{'\n'}BBBBBB{'\n'}CCCCCC{'\n'}DDDDDD
+				</Text>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, 'AAAA\nBBBB');
+});
+
+test('nested overflow - inner wider than outer clips to outer bounds', t => {
+	const output = renderToString(
+		<Box width={3} height={2} overflow="hidden">
+			<Box width={10} height={5} overflow="hidden" flexShrink={0}>
+				<Text>
+					XXXXXXXXXX{'\n'}YYYYYYYYYY{'\n'}ZZZZZZZZZZ
+				</Text>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, 'XXX\nYYY');
+});
+
+test('nested overflow - sibling containers do not affect each other', t => {
+	const output = renderToString(
+		<Box width={10} height={6} overflow="hidden" flexDirection="column">
+			<Box height={3} overflow="hidden" flexShrink={0}>
+				<Text>
+					AAA{'\n'}BBB{'\n'}CCC{'\n'}DDD
+				</Text>
+			</Box>
+			<Box height={3} overflow="hidden" flexShrink={0}>
+				<Text>
+					111{'\n'}222{'\n'}333{'\n'}444
+				</Text>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, 'AAA\nBBB\nCCC\n111\n222\n333');
+});
+
 // See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
 test('out of bounds writes do not crash', t => {
 	const output = renderToString(
