@@ -606,6 +606,29 @@ const applyDisplayStyles = (node: YogaNode, style: Styles): void => {
 	}
 };
 
+const applyOverflowStyles = (node: YogaNode, style: Styles): void => {
+	if ('overflow' in style) {
+		if (style.overflow === 'hidden' || style.overflow === 'scroll') {
+			node.setOverflow(Yoga.OVERFLOW_HIDDEN);
+		} else {
+			node.setOverflow(Yoga.OVERFLOW_VISIBLE);
+		}
+	}
+
+	if ('overflowX' in style || 'overflowY' in style) {
+		const overflowX = style.overflowX ?? style.overflow ?? 'visible';
+		const overflowY = style.overflowY ?? style.overflow ?? 'visible';
+		const shouldClip =
+			overflowX === 'hidden' ||
+			overflowX === 'scroll' ||
+			overflowY === 'hidden' ||
+			overflowY === 'scroll';
+		if (shouldClip) {
+			node.setOverflow(Yoga.OVERFLOW_HIDDEN);
+		}
+	}
+};
+
 const applyBorderStyles = (node: YogaNode, style: Styles): void => {
 	if ('borderStyle' in style) {
 		const borderWidth = style.borderStyle ? 1 : 0;
@@ -649,6 +672,7 @@ const styles = (node: YogaNode, style: Styles = {}): void => {
 	applyFlexStyles(node, style);
 	applyDimensionStyles(node, style);
 	applyDisplayStyles(node, style);
+	applyOverflowStyles(node, style);
 	applyBorderStyles(node, style);
 	applyGapStyles(node, style);
 };
