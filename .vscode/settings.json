@@ -1,0 +1,20 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "samverschueren.vscode-xo",
+  "xo.enable": true,
+  "xo.format.enable": true,
+  "javascript.format.enable": false,
+  "typescript.format.enable": false,
+  "[javascript]": {
+    "editor.defaultFormatter": "samverschueren.vscode-xo"
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "samverschueren.vscode-xo"
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "samverschueren.vscode-xo"
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "samverschueren.linter-xo"
+  }
+}
