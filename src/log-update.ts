@@ -1,4 +1,4 @@
-import {type Writable} from 'node:stream';
+import type {Writable} from 'node:stream';
 import ansiEscapes from 'ansi-escapes';
 import cliCursor from 'cli-cursor';
 
@@ -23,7 +23,7 @@ const createStandard = (
 			hasHiddenCursor = true;
 		}
 
-		const output = str;
+		const output = str + '\n';
 		if (output === previousOutput) {
 			return;
 		}
@@ -40,12 +40,6 @@ const createStandard = (
 	};
 
 	render.done = () => {
-		// On exit, we write a finally newline to restore the terminal prompt properly,
-		// unless the output was empty.
-		if (previousOutput.length > 0) {
-			stream.write('\n');
-		}
-
 		previousOutput = '';
 		previousLineCount = 0;
 
@@ -56,7 +50,7 @@ const createStandard = (
 	};
 
 	render.sync = (str: string) => {
-		const output = str;
+		const output = str + '\n';
 		previousOutput = output;
 		previousLineCount = output.split('\n').length;
 	};
@@ -78,7 +72,7 @@ const createIncremental = (
 			hasHiddenCursor = true;
 		}
 
-		const output = str;
+		const output = str + '\n';
 		if (output === previousOutput) {
 			return;
 		}
@@ -86,9 +80,9 @@ const createIncremental = (
 		const previousCount = previousLines.length;
 		const nextLines = output.split('\n');
 		const nextCount = nextLines.length;
-		const visibleCount = nextCount;
+		const visibleCount = nextCount - 1;
 
-		if (output === '' || previousOutput.length === 0) {
+		if (output === '\n' || previousOutput.length === 0) {
 			stream.write(ansiEscapes.eraseLines(previousCount) + output);
 			previousOutput = output;
 			previousLines = nextLines;
@@ -101,29 +95,28 @@ const createIncremental = (
 		// Clear extra lines if the current content's line count is lower than the previous.
 		if (nextCount < previousCount) {
 			buffer.push(
-				// Erases the trailing lines.
-				ansiEscapes.eraseLines(previousCount - nextCount),
+				// Erases the trailing lines and the final newline slot.
+				ansiEscapes.eraseLines(previousCount - nextCount + 1),
 				// Positions cursor to the top of the rendered output.
-				ansiEscapes.cursorUp(nextCount),
+				ansiEscapes.cursorUp(visibleCount),
 			);
 		} else {
 			buffer.push(ansiEscapes.cursorUp(previousCount - 1));
 		}
 
 		for (let i = 0; i < visibleCount; i++) {
-			// We skip writing lines if the contents are the same to prevent flickering.
-			// However, we must still handle cursor positioning.
-			const contentChanged = nextLines[i] !== previousLines[i];
-
-			if (contentChanged) {
-				// Erase and write the changed line
-				buffer.push(ansiEscapes.eraseLine, nextLines[i] ?? '');
+			// We do not write lines if the contents are the same. This prevents flickering during renders.
+			if (nextLines[i] === previousLines[i]) {
+				buffer.push(ansiEscapes.cursorNextLine);
+				continue;
 			}
 
-			// Move to next line, except for the last line
-			if (i < visibleCount - 1) {
-				buffer.push(contentChanged ? '\n' : ansiEscapes.cursorNextLine);
-			}
+			buffer.push(
+				ansiEscapes.cursorTo(0) +
+					nextLines[i] +
+					ansiEscapes.eraseEndLine +
+					'\n',
+			);
 		}
 
 		stream.write(buffer.join(''));
@@ -139,10 +132,6 @@ const createIncremental = (
 	};
 
 	render.done = () => {
-		if (previousOutput.length > 0) {
-			stream.write('\n');
-		}
-
 		previousOutput = '';
 		previousLines = [];
 
@@ -153,7 +142,7 @@ const createIncremental = (
 	};
 
 	render.sync = (str: string) => {
-		const output = str;
+		const output = str + '\n';
 		previousOutput = output;
 		previousLines = output.split('\n');
 	};

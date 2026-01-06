@@ -1,13 +1,12 @@
 import sliceAnsi from 'slice-ansi';
 import stringWidth from 'string-width';
-import widestLine from 'widest-line';
 import {
 	type StyledChar,
 	styledCharsFromTokens,
 	styledCharsToString,
 	tokenize,
 } from '@alcalzone/ansi-tokenize';
-import {type OutputTransformer} from './render-node-to-output.js';
+import type {OutputTransformer} from './render-node-to-output.js';
 
 /**
 "Virtual" output class
@@ -173,7 +172,7 @@ export default class Output {
 					// If text is positioned outside of clipping area altogether,
 					// skip to the next operation to avoid unnecessary calculations
 					if (clipHorizontally) {
-						const width = widestLine(text);
+						const width = Math.max(0, ...lines.map(line => stringWidth(line)));
 
 						if (x + width < clip.x1! || x > clip.x2!) {
 							continue;
@@ -233,10 +232,25 @@ export default class Output {
 					let offsetX = x;
 
 					for (const character of characters) {
+						// Check if this is a zero-width character (like U+FE0E text presentation selector)
+						const rawWidth = stringWidth(character.value);
+
+						if (rawWidth === 0) {
+							// Zero-width characters should be appended to the previous cell
+							// rather than taking up their own space
+							const previousCell = currentLine[offsetX - 1];
+							if (previousCell?.value) {
+								previousCell.value += character.value;
+							}
+
+							// Don't advance offsetX for zero-width characters
+							continue;
+						}
+
 						currentLine[offsetX] = character;
 
-						// Determine printed width using string-width to align with measurement
-						const characterWidth = Math.max(1, stringWidth(character.value));
+						// Determine printed width using string-width
+						const characterWidth = Math.max(1, rawWidth);
 
 						// For multi-column characters, clear following cells to avoid stray spaces/artifacts
 						if (characterWidth > 1) {

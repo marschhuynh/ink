@@ -1,4 +1,4 @@
-import widestLine from 'widest-line';
+import stringWidth from 'string-width';
 
 const cache = new Map<string, Output>();
 
@@ -21,8 +21,18 @@ const measureText = (text: string): Output => {
 		return cachedDimensions;
 	}
 
-	const width = widestLine(text);
-	const height = text.split('\n').length;
+	const lines = text.split('\n');
+	let width = Math.max(0, ...lines.map(line => stringWidth(line)));
+
+	// If width is > 0, add a tiny epsilon to prevent Yoga from wrapping
+	// items with exact integer width (like 1) in some flexbox configurations.
+	// This fixes a layout regression where items would wrap unexpectedly.
+	if (width > 0) {
+		width += 0.01;
+		// Width += 0;
+	}
+
+	const height = lines.length;
 	const dimensions = {width, height};
 	cache.set(text, dimensions);
 

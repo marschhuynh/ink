@@ -279,6 +279,7 @@ function ThrottleTestComponent({text}: {readonly text: string}) {
 }
 
 test.serial('throttle renders to maxFps', t => {
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
 	const clock = FakeTimers.install(); // Controls timers + Date.now()
 	try {
 		const stdout = createStdout();
@@ -289,6 +290,7 @@ test.serial('throttle renders to maxFps', t => {
 		});
 
 		// Initial render (leading call)
+
 		t.is((stdout.write as any).callCount, 1);
 		t.is(
 			stripAnsi((stdout.write as any).lastCall.args[0] as string),
@@ -297,14 +299,19 @@ test.serial('throttle renders to maxFps', t => {
 
 		// Trigger another render inside the throttle window
 		rerender(<ThrottleTestComponent text="World" />);
+
 		t.is((stdout.write as any).callCount, 1);
 
 		// Advance 999 ms: still within window, no trailing call yet
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.tick(999);
+
 		t.is((stdout.write as any).callCount, 1);
 
 		// Cross the boundary: trailing render fires once
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.tick(1);
+
 		t.is((stdout.write as any).callCount, 2);
 		t.is(
 			stripAnsi((stdout.write as any).lastCall.args[0] as string),
@@ -313,6 +320,7 @@ test.serial('throttle renders to maxFps', t => {
 
 		unmount();
 	} finally {
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.uninstall();
 	}
 });
@@ -378,6 +386,7 @@ test.serial('outputs renderTime when onRender is passed', async t => {
 });
 
 test.serial('no throttled renders after unmount', t => {
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
 	const clock = FakeTimers.install();
 	try {
 		const stdout = createStdout();
@@ -396,9 +405,12 @@ test.serial('no throttled renders after unmount', t => {
 		const callCountAfterUnmount = (stdout.write as any).callCount;
 
 		// Regression test for https://github.com/vadimdemedes/ink/issues/692
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.tick(1000);
+
 		t.is((stdout.write as any).callCount, callCountAfterUnmount);
 	} finally {
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.uninstall();
 	}
 });
