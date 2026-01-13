@@ -29,7 +29,6 @@ const measureText = (text: string): Output => {
 	// This fixes a layout regression where items would wrap unexpectedly.
 	if (width > 0) {
 		width += 0.01;
-		// Width += 0;
 	}
 
 	const height = lines.length;

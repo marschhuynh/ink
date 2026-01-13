@@ -107,7 +107,10 @@ const createIncremental = (
 				ansiEscapes.cursorUp(nextCount),
 			);
 		} else {
-			buffer.push(ansiEscapes.cursorUp(previousCount - 1));
+			buffer.push(
+				ansiEscapes.cursorUp(previousCount - 1),
+				ansiEscapes.cursorLeft,
+			);
 		}
 
 		for (let i = 0; i < visibleCount; i++) {
