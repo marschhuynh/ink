@@ -232,18 +232,37 @@ export default class Output {
 					let offsetX = x;
 
 					for (const character of characters) {
-						// Check if this is a zero-width character (like U+FE0E text presentation selector)
+						// Check if this is a zero-width character (like U+FE0F emoji variation selector)
 						const rawWidth = stringWidth(character.value);
 
 						if (rawWidth === 0) {
-							// Zero-width characters should be appended to the previous cell
-							// rather than taking up their own space
+							// Zero-width characters (like variation selectors) should be appended
+							// to the previous cell rather than taking up their own space
 							const previousCell = currentLine[offsetX - 1];
 							if (previousCell?.value) {
+								// Measure width before and after appending to detect width changes
+								// This handles cases like ⏭ (width 1) + ️ (VS16) = ⏭️ (width 2)
+								const prevWidth = stringWidth(previousCell.value);
 								previousCell.value += character.value;
+								const newWidth = stringWidth(previousCell.value);
+
+								// If combining increased the display width, add placeholder cells
+								const extraWidth = newWidth - prevWidth;
+								if (extraWidth > 0) {
+									for (let i = 0; i < extraWidth; i++) {
+										currentLine[offsetX + i] = {
+											type: 'char',
+											value: '',
+											fullWidth: false,
+											styles: previousCell.styles,
+										};
+									}
+
+									offsetX += extraWidth;
+								}
 							}
 
-							// Don't advance offsetX for zero-width characters
+							// Don't advance offsetX for zero-width characters (already handled above if width changed)
 							continue;
 						}
 
