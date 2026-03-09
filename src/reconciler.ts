@@ -1,4 +1,3 @@
-import process from 'node:process';
 import createReconciler, {type ReactContext} from 'react-reconciler';
 import {
 	DefaultEventPriority,
@@ -22,11 +21,12 @@ import {
 } from './dom.js';
 import applyStyles, {type Styles} from './styles.js';
 import {type OutputTransformer} from './render-node-to-output.js';
+import {isDev} from './utils.js';
 
 // We need to conditionally perform devtools connection to avoid
 // accidentally breaking other third-party code.
 // See https://github.com/vadimdemedes/ink/issues/384
-if (process.env['DEV'] === 'true') {
+if (isDev()) {
 	try {
 		await import('./devtools.js');
 	} catch (error: any) {
@@ -97,6 +97,19 @@ type HostContext = {
 let currentUpdatePriority = NoEventPriority;
 
 let currentRootNode: DOMElement | undefined;
+
+async function loadPackageJson() {
+	const fs = await import('node:fs');
+	const content = fs.readFileSync(
+		new URL('../package.json', import.meta.url),
+		'utf8',
+	);
+	return JSON.parse(content) as {name: string; version: string};
+}
+
+const packageJson = isDev()
+	? await loadPackageJson()
+	: {name: undefined, version: undefined};
 
 export default createReconciler<
 	ElementNames,
@@ -346,4 +359,7 @@ export default createReconciler<
 	waitForCommitToBeReady() {
 		return null;
 	},
+	// @ts-expect-error react-reconciler types don't include these properties
+	rendererPackageName: packageJson.name,
+	rendererVersion: packageJson.version,
 });
