@@ -267,7 +267,10 @@ export default class Ink {
 			this.fullStaticOutput += staticOutput;
 		}
 
-		if (this.lastOutputHeight >= this.options.stdout.rows) {
+		if (
+			!this.options.incrementalRendering &&
+			this.lastOutputHeight >= this.options.stdout.rows
+		) {
 			this.options.stdout.write(
 				ansiEscapes.clearTerminal + this.fullStaticOutput + output,
 			);
