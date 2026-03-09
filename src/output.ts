@@ -8,6 +8,11 @@ import {
 } from '@alcalzone/ansi-tokenize';
 import type {OutputTransformer} from './render-node-to-output.js';
 
+const TAB_SPACES = '  '; // 2 spaces per tab
+
+const expandTabs = (text: string): string =>
+	text.includes('\t') ? text.replaceAll('\t', TAB_SPACES) : text;
+
 /**
 "Virtual" output class
 
@@ -107,7 +112,7 @@ export default class Output {
 			type: 'write',
 			x,
 			y,
-			text,
+			text: expandTabs(text),
 			transformers,
 		});
 	}

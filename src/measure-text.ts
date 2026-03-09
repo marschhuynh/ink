@@ -2,6 +2,8 @@ import stringWidth from 'string-width';
 
 const cache = new Map<string, Output>();
 
+const TAB_SPACES = '  '; // 2 spaces per tab
+
 type Output = {
 	width: number;
 	height: number;
@@ -22,7 +24,12 @@ const measureText = (text: string): Output => {
 	}
 
 	const lines = text.split('\n');
-	let width = Math.max(0, ...lines.map(line => stringWidth(line)));
+	let width = Math.max(
+		0,
+		...lines.map(line =>
+			stringWidth(line.includes('\t') ? line.replaceAll('\t', TAB_SPACES) : line),
+		),
+	);
 
 	// If width is > 0, add a tiny epsilon to prevent Yoga from wrapping
 	// items with exact integer width (like 1) in some flexbox configurations.
