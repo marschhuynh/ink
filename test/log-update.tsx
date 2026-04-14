@@ -5,13 +5,13 @@ import createStdout from './helpers/create-stdout.js';
 
 test('standard rendering - renders and updates output', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout);
+	const render = logUpdate.create(stdout, {showCursor: true});
 
-	render('Hello');
+	render('Hello\n');
 	t.is((stdout.write as any).callCount, 1);
 	t.is((stdout.write as any).firstCall.args[0], 'Hello\n');
 
-	render('World');
+	render('World\n');
 	t.is((stdout.write as any).callCount, 2);
 	t.true(
 		((stdout.write as any).secondCall.args[0] as string).includes('World'),
@@ -20,23 +20,26 @@ test('standard rendering - renders and updates output', t => {
 
 test('standard rendering - skips identical output', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout);
+	const render = logUpdate.create(stdout, {showCursor: true});
 
-	render('Hello');
-	render('Hello');
+	render('Hello\n');
+	render('Hello\n');
 
 	t.is((stdout.write as any).callCount, 1);
 });
 
 test('incremental rendering - renders and updates output', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Hello');
+	render('Hello\n');
 	t.is((stdout.write as any).callCount, 1);
 	t.is((stdout.write as any).firstCall.args[0], 'Hello\n');
 
-	render('World');
+	render('World\n');
 	t.is((stdout.write as any).callCount, 2);
 	t.true(
 		((stdout.write as any).secondCall.args[0] as string).includes('World'),
@@ -45,20 +48,26 @@ test('incremental rendering - renders and updates output', t => {
 
 test('incremental rendering - skips identical output', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Hello');
-	render('Hello');
+	render('Hello\n');
+	render('Hello\n');
 
 	t.is((stdout.write as any).callCount, 1);
 });
 
 test('incremental rendering - surgical updates', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Line 1\nLine 2\nLine 3');
-	render('Line 1\nUpdated\nLine 3');
+	render('Line 1\nLine 2\nLine 3\n');
+	render('Line 1\nUpdated\nLine 3\n');
 
 	const secondCall = (stdout.write as any).secondCall.args[0] as string;
 	t.true(secondCall.includes(ansiEscapes.cursorNextLine)); // Skips unchanged lines
@@ -67,12 +76,34 @@ test('incremental rendering - surgical updates', t => {
 	t.false(secondCall.includes('Line 3')); // Doesn't rewrite unchanged
 });
 
+test('incremental rendering - same-height update rewinds cursor to top with trailing newline', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render('Line 1\nLine 2\nLine 3\n');
+	render('Line 1\nUpdated\nLine 3\n');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	// Output ends with '\n', so split('\n') gives ["Line 1","Line 2","Line 3",""]
+	// (length 4). After writing, cursor is on row 3 (the empty row past last
+	// visible line). cursorUp must be 3 (= 4 - 1) to reach row 0.
+	// Using visibleLineCount - 1 (= 2) would only reach row 1, leaving row 0
+	// as a ghost line.
+	t.true(secondCall.startsWith(ansiEscapes.cursorUp(3)));
+});
+
 test('incremental rendering - clears extra lines when output shrinks', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Line 1\nLine 2\nLine 3');
-	render('Line 1');
+	render('Line 1\nLine 2\nLine 3\n');
+	render('Line 1\n');
 
 	const secondCall = (stdout.write as any).secondCall.args[0] as string;
 	t.true(secondCall.includes(ansiEscapes.eraseLines(2))); // Erases 2 extra lines
@@ -80,10 +111,13 @@ test('incremental rendering - clears extra lines when output shrinks', t => {
 
 test('incremental rendering - when output grows', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Line 1');
-	render('Line 1\nLine 2\nLine 3');
+	render('Line 1\n');
+	render('Line 1\nLine 2\nLine 3\n');
 
 	const secondCall = (stdout.write as any).secondCall.args[0] as string;
 	t.true(secondCall.includes(ansiEscapes.cursorNextLine)); // Skips unchanged first line
@@ -94,13 +128,16 @@ test('incremental rendering - when output grows', t => {
 
 test('incremental rendering - single write call with multiple surgical updates', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
 	render(
-		'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10',
+		'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\n',
 	);
 	render(
-		'Line 1\nUpdated 2\nLine 3\nUpdated 4\nLine 5\nUpdated 6\nLine 7\nUpdated 8\nLine 9\nUpdated 10',
+		'Line 1\nUpdated 2\nLine 3\nUpdated 4\nLine 5\nUpdated 6\nLine 7\nUpdated 8\nLine 9\nUpdated 10\n',
 	);
 
 	t.is((stdout.write as any).callCount, 2); // Only 2 writes total (initial + update)
@@ -108,11 +145,14 @@ test('incremental rendering - single write call with multiple surgical updates',
 
 test('incremental rendering - shrinking output keeps screen tight', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Line 1\nLine 2\nLine 3');
-	render('Line 1\nLine 2');
-	render('Line 1');
+	render('Line 1\nLine 2\nLine 3\n');
+	render('Line 1\nLine 2\n');
+	render('Line 1\n');
 
 	const thirdCall = stdout.get();
 
@@ -126,11 +166,14 @@ test('incremental rendering - shrinking output keeps screen tight', t => {
 
 test('incremental rendering - clear() fully resets incremental state', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Line 1\nLine 2\nLine 3');
+	render('Line 1\nLine 2\nLine 3\n');
 	render.clear();
-	render('Line 1');
+	render('Line 1\n');
 
 	const afterClear = stdout.get();
 
@@ -139,11 +182,14 @@ test('incremental rendering - clear() fully resets incremental state', t => {
 
 test('incremental rendering - done() resets before next render', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Line 1\nLine 2\nLine 3');
+	render('Line 1\nLine 2\nLine 3\n');
 	render.done();
-	render('Line 1');
+	render('Line 1\n');
 
 	const afterDone = stdout.get();
 
@@ -152,9 +198,12 @@ test('incremental rendering - done() resets before next render', t => {
 
 test('incremental rendering - multiple consecutive clear() calls (should be harmless no-ops)', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Line 1\nLine 2\nLine 3');
+	render('Line 1\nLine 2\nLine 3\n');
 	render.clear();
 	render.clear();
 	render.clear();
@@ -162,19 +211,22 @@ test('incremental rendering - multiple consecutive clear() calls (should be harm
 	t.is((stdout.write as any).callCount, 4); // Initial render + 3 clears (each writes eraseLines)
 
 	// Verify state is properly reset after multiple clears
-	render('New content');
+	render('New content\n');
 	const afterClears = stdout.get();
 	t.is(afterClears, ansiEscapes.eraseLines(0) + 'New content\n'); // Should do a fresh write
 });
 
 test('incremental rendering - sync() followed by update (assert incremental path is used)', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render.sync('Line 1\nLine 2\nLine 3');
+	render.sync('Line 1\nLine 2\nLine 3\n');
 	t.is((stdout.write as any).callCount, 0); // The sync() call shouldn't write to stdout
 
-	render('Line 1\nUpdated\nLine 3');
+	render('Line 1\nUpdated\nLine 3\n');
 	t.is((stdout.write as any).callCount, 1);
 
 	const firstCall = (stdout.write as any).firstCall.args[0] as string;
@@ -184,325 +236,388 @@ test('incremental rendering - sync() followed by update (assert incremental path
 	t.false(firstCall.includes('Line 3')); // Doesn't rewrite unchanged
 });
 
+// Cursor positioning tests
+
+const showCursorEscape = '\u001B[?25h';
+const hideCursorEscape = '\u001B[?25l';
+
+const renderingModes = [
+	{name: 'standard rendering', incremental: false},
+	{name: 'incremental rendering', incremental: true},
+] as const;
+
+const createRenderForMode = (incremental: boolean) => {
+	const stdout = createStdout();
+	const render = incremental
+		? logUpdate.create(stdout, {showCursor: true, incremental: true})
+		: logUpdate.create(stdout, {showCursor: true});
+	return {stdout, render};
+};
+
+test('standard rendering - positions cursor after output when cursorPosition is set', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {showCursor: true});
+
+	render.setCursorPosition({x: 5, y: 1});
+	render('Line 1\nLine 2\nLine 3\n');
+
+	const written = (stdout.write as any).firstCall.args[0] as string;
+	// Output is "Line 1\nLine 2\nLine 3\n" (3 visible lines)
+	// Cursor after write is at line 3 (0-indexed), col 0
+	// To reach y=1: cursorUp(3 - 1) = cursorUp(2)
+	// Then cursorTo(5) and show cursor
+	t.true(written.includes('Line 3'));
+	t.true(
+		written.endsWith(
+			ansiEscapes.cursorUp(2) + ansiEscapes.cursorTo(5) + showCursorEscape,
+		),
+	);
+});
+
+test('standard rendering - hides cursor before erase when cursor was previously shown', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {showCursor: true});
+
+	render.setCursorPosition({x: 0, y: 0});
+	render('Hello\n');
+	render.setCursorPosition({x: 0, y: 0});
+	render('World\n');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	// Should start with hide cursor before erasing
+	t.true(secondCall.startsWith(hideCursorEscape));
+	// Should end with show cursor at position
+	t.true(
+		secondCall.endsWith(
+			ansiEscapes.cursorUp(1) + ansiEscapes.cursorTo(0) + showCursorEscape,
+		),
+	);
+});
+
+test('standard rendering - no cursor positioning when cursorPosition is undefined', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {showCursor: true});
+
+	render('Hello\n');
+
+	const written = (stdout.write as any).firstCall.args[0] as string;
+	t.false(written.includes(showCursorEscape));
+});
+
+test('standard rendering - cursor position at second-to-last line emits cursorUp(1)', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {showCursor: true});
+
+	render.setCursorPosition({x: 3, y: 2});
+	render('Line 1\nLine 2\nLine 3\n');
+
+	const written = (stdout.write as any).firstCall.args[0] as string;
+	// Output has 3 visible lines. After write, cursor is at line 3 (past last visible).
+	// To reach y=2: cursorUp(3 - 2) = cursorUp(1)
+	t.true(
+		written.endsWith(
+			ansiEscapes.cursorUp(1) + ansiEscapes.cursorTo(3) + showCursorEscape,
+		),
+	);
+});
+
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - clear() returns cursor to bottom before erasing`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 5, y: 0});
+		render('Line 1\nLine 2\nLine 3\n');
+
+		render.clear();
+
+		const clearCall = (stdout.write as any).secondCall.args[0] as string;
+		// Cursor was at y=0, output had 4 lines (3 visible + trailing newline).
+		// clear() should: hide cursor, move down to bottom (from y=0 to line 3), then erase
+		t.true(clearCall.includes(hideCursorEscape));
+		t.true(clearCall.includes(ansiEscapes.cursorDown(3)));
+		t.true(clearCall.includes(ansiEscapes.eraseLines(4)));
+	});
+}
+
+test('standard rendering - clearing cursor position stops cursor positioning', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {showCursor: true});
+
+	render.setCursorPosition({x: 0, y: 0});
+	render('Hello\n');
+
+	render.setCursorPosition(undefined);
+	render('World\n');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	t.false(secondCall.includes(showCursorEscape));
+});
+
+test('incremental rendering - positions cursor after surgical updates', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render.setCursorPosition({x: 5, y: 1});
+	render('Line 1\nLine 2\nLine 3\n');
+
+	const written = (stdout.write as any).firstCall.args[0] as string;
+	// After incremental write, cursor is at line 3 (past last visible)
+	// To reach y=1: cursorUp(3 - 1) = cursorUp(2)
+	t.true(
+		written.endsWith(
+			ansiEscapes.cursorUp(2) + ansiEscapes.cursorTo(5) + showCursorEscape,
+		),
+	);
+});
+
+test('incremental rendering - positions cursor after update', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render.setCursorPosition({x: 2, y: 0});
+	render('Line 1\nLine 2\nLine 3\n');
+	render.setCursorPosition({x: 2, y: 0});
+	render('Line 1\nUpdated\nLine 3\n');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	// After incremental update, cursor is at line 3
+	// To reach y=0: cursorUp(3)
+	t.true(
+		secondCall.endsWith(
+			ansiEscapes.cursorUp(3) + ansiEscapes.cursorTo(2) + showCursorEscape,
+		),
+	);
+});
+
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - repositions cursor when only cursor position changes (same output)`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 2, y: 0});
+		render('Hello\n');
+		t.is((stdout.write as any).callCount, 1);
+
+		// Same output, but cursor moved (simulates space input where output is padded identically)
+		render.setCursorPosition({x: 3, y: 0});
+		render('Hello\n');
+
+		t.is((stdout.write as any).callCount, 2);
+		const secondCall = (stdout.write as any).secondCall.args[0] as string;
+		// Should reposition cursor: hide + return to bottom + move to new position + show
+		t.true(secondCall.includes(showCursorEscape));
+		t.true(secondCall.endsWith(ansiEscapes.cursorTo(3) + showCursorEscape));
+	});
+}
+
+test('standard rendering - returns to bottom before erase when cursor was positioned', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {showCursor: true});
+
+	render.setCursorPosition({x: 0, y: 0});
+	render('Line 1\nLine 2\nLine 3\n');
+
+	render.setCursorPosition({x: 5, y: 0});
+	render('Line A\nLine B\nLine C\n');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	// Should: hide cursor, move down to bottom (from y=0 to line 3), then erase + rewrite
+	t.true(secondCall.startsWith(hideCursorEscape));
+	t.true(secondCall.includes(ansiEscapes.cursorDown(3)));
+	t.true(secondCall.includes('Line A'));
+});
+
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - sync() resets cursor state`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 5, y: 0});
+		render('Line 1\nLine 2\nLine 3\n');
+
+		// Sync() simulates clearTerminal path: screen is fully reset
+		render.sync('Fresh output\n');
+
+		// Next render should NOT include hideCursor + cursorDown (return-to-bottom prefix)
+		// because sync() should have reset previousCursorPosition and cursorWasShown
+		render('Updated output\n');
+
+		const afterSync = stdout.get();
+		t.false(afterSync.includes(hideCursorEscape));
+		t.false(afterSync.includes(ansiEscapes.cursorDown(3)));
+	});
+}
+
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - sync() writes cursor suffix when cursor is dirty`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 5, y: 1});
+		render.sync('Line 1\nLine 2\nLine 3\n');
+
+		// Sync() should write cursor suffix to position cursor
+		// 3 visible lines, cursor at y=1 → cursorUp(3-1) = cursorUp(2)
+		t.is((stdout.write as any).callCount, 1);
+		const written = (stdout.write as any).firstCall.args[0] as string;
+		t.is(
+			written,
+			ansiEscapes.cursorUp(2) + ansiEscapes.cursorTo(5) + showCursorEscape,
+		);
+	});
+}
+
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - sync() with cursor sets cursorWasShown for next render`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 5, y: 1});
+		render.sync('Line 1\nLine 2\nLine 3\n');
+
+		// Next render should hide cursor before erasing (cursorWasShown = true from sync)
+		render('Updated\n');
+
+		const renderCall = stdout.get();
+		t.true(renderCall.startsWith(hideCursorEscape));
+	});
+}
+
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - sync() hides cursor when previous render showed cursor`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 5, y: 1});
+		render('Line 1\nLine 2\nLine 3\n');
+		t.is((stdout.write as any).callCount, 1);
+
+		render.sync('Fresh output\n');
+
+		t.is((stdout.write as any).callCount, 2);
+		t.is((stdout.write as any).secondCall.args[0] as string, hideCursorEscape);
+	});
+}
+
+test('standard rendering - sync() without cursor does not write to stream', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {showCursor: true});
+
+	render.sync('Line 1\nLine 2\nLine 3\n');
+
+	t.is((stdout.write as any).callCount, 0);
+});
+
+// No-trailing-newline tests (fullscreen mode)
+
+test('incremental rendering - no trailing newline: trailing to no-trailing transition', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render('A\nB\n');
+	render('A\nB');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	// Both lines are unchanged, so only cursor movement should occur.
+	// The key is that the cursor does NOT overshoot past line B.
+	t.true(secondCall.includes(ansiEscapes.cursorNextLine)); // Skip unchanged A
+	t.false(secondCall.endsWith('\n')); // No trailing newline in output
+});
+
+test('incremental rendering - no trailing newline: no-trailing to no-trailing update', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render('A\nB');
+	render('A\nC');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	t.true(secondCall.includes(ansiEscapes.cursorNextLine)); // Skip unchanged A
+	t.true(secondCall.includes('C')); // Updates B to C
+	t.false(secondCall.endsWith('\n')); // No trailing newline
+});
+
+test('incremental rendering - no trailing newline: shrink', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render('A\nB');
+	render('A');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	// Should erase 1 extra line (B), not over-erase A
+	// previousVisible=2, visibleCount=1, no trailing newline -> eraseLines(2-1+0) = eraseLines(1)
+	t.true(secondCall.includes(ansiEscapes.eraseLines(1)));
+	t.false(secondCall.endsWith('\n')); // No trailing newline
+});
+
+test('incremental rendering - no trailing newline: grow', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render('A');
+	render('A\nB\nC');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	t.true(secondCall.includes('B')); // New line B
+	t.true(secondCall.includes('C')); // New line C
+	t.false(secondCall.endsWith('\n')); // No trailing newline
+});
+
+test('incremental rendering - no trailing newline: unchanged lines do not overshoot cursor', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render('A\nB');
+	render('A\nB'); // Identical - should be skipped entirely
+
+	t.is((stdout.write as any).callCount, 1); // No second write (identical)
+
+	// Now change only the first line
+	render('X\nB');
+
+	const thirdCall = (stdout.write as any).secondCall.args[0] as string;
+	// Should write X with newline to advance to B's line, then skip B.
+	// The buffer ends with the \n that moves to B's line, but no extra
+	// cursorNextLine past B -- the cursor stays on the last visible line.
+	t.true(thirdCall.includes('X'));
+	// Verify no cursorNextLine appears after B's position (B is unchanged
+	// and last, so no cursor movement is emitted for it)
+	const lastCursorNextLine = thirdCall.lastIndexOf(ansiEscapes.cursorNextLine);
+	t.is(lastCursorNextLine, -1); // No cursorNextLine at all since A is changed (written) not skipped
+});
+
 test('incremental rendering - render to empty string (full clear vs early exit)', t => {
 	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
 
-	render('Line 1\nLine 2\nLine 3');
-	render('');
+	render('Line 1\nLine 2\nLine 3\n');
+	render('\n');
 
 	t.is((stdout.write as any).callCount, 2);
 	const secondCall = (stdout.write as any).secondCall.args[0] as string;
 	t.is(secondCall, ansiEscapes.eraseLines(4) + '\n'); // Erases all 4 lines + writes single newline
 
 	// Rendering empty string again should be skipped (identical output)
-	render('');
+	render('\n');
 	t.is((stdout.write as any).callCount, 2); // No additional write
-});
-
-// =====================================================
-// Wide Character & Unicode Tests
-// =====================================================
-
-test('incremental rendering - gear icon with text presentation selector', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Using gear icon with text presentation selector (⚙︎ = U+2699 U+FE0E)
-	render('⚙︎ Task running');
-	render('⚙︎ Task completed');
-
-	const secondCall = (stdout.write as any).secondCall.args[0] as string;
-	t.true(secondCall.includes('Task completed'));
-	// The gear icon line should remain intact
-	t.true(secondCall.includes('⚙︎'));
-});
-
-test('incremental rendering - gear icon consistency across updates', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Simulating the tool call display scenario
-	const gearIcon = '⚙︎';
-	render(
-		`${gearIcon} Wait 10s then generate random number\n   cmd: sleep 10\n   Running ... 2s`,
-	);
-	const firstOutput = (stdout.write as any).firstCall.args[0] as string;
-
-	render(
-		`${gearIcon} Wait 10s then generate random number\n   cmd: sleep 10\n   Executed (exit 0)\n   Done in 10.2s`,
-	);
-	const secondOutput = (stdout.write as any).secondCall.args[0] as string;
-
-	// Verify both outputs have the gear icon
-	t.true(firstOutput.includes(gearIcon));
-	t.true(
-		secondOutput.includes(gearIcon) ||
-			secondOutput.includes(ansiEscapes.cursorNextLine),
-	);
-
-	// If the first line is unchanged, it should be skipped
-	// The second call should include cursorNextLine to skip the unchanged first line
-	t.true(secondOutput.includes(ansiEscapes.cursorNextLine));
-});
-
-test('incremental rendering - comparing gear icon variants', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Test different gear icon variants
-	const gearText = '⚙︎'; // Text presentation (U+2699 U+FE0E)
-	const gearEmoji = '⚙️'; // Emoji presentation (U+2699 U+FE0F)
-	const gearPlain = '⚙'; // Plain (U+2699)
-
-	render(`${gearText} Text presentation`);
-	const output1 = (stdout.write as any).lastCall.args[0] as string;
-
-	render(`${gearEmoji} Emoji presentation`);
-	const output2 = (stdout.write as any).lastCall.args[0] as string;
-
-	render(`${gearPlain} Plain gear`);
-	const output3 = (stdout.write as any).lastCall.args[0] as string;
-
-	// All should render without issues
-	t.true(output1.includes(gearText));
-	t.true(output2.includes(gearEmoji));
-	t.true(output3.includes(gearPlain));
-});
-
-test('incremental rendering - wide emoji characters', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	render('🚀 Launching...');
-	render('🚀 Launched!');
-
-	const secondCall = (stdout.write as any).secondCall.args[0] as string;
-	t.true(secondCall.includes('Launched!'));
-});
-
-test('incremental rendering - CJK characters', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	render('日本語 Line 1\n中文 Line 2\n한국어 Line 3');
-	render('日本語 Line 1\n中文 Updated\n한국어 Line 3');
-
-	const secondCall = (stdout.write as any).secondCall.args[0] as string;
-	t.true(secondCall.includes('Updated'));
-	t.true(secondCall.includes(ansiEscapes.cursorNextLine)); // Skips unchanged lines
-	t.false(secondCall.includes('日本語 Line 1')); // First line unchanged
-	t.false(secondCall.includes('한국어 Line 3')); // Third line unchanged
-});
-
-test('incremental rendering - Vietnamese text with diacritics', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Vietnamese text with diacritical marks
-	render('Đây là một bài test phức tạp\nLine 2\nLine 3');
-	render('Đây là một bài test phức tạp\nUpdated\nLine 3');
-
-	const secondCall = (stdout.write as any).secondCall.args[0] as string;
-	t.true(secondCall.includes('Updated'));
-	t.true(secondCall.includes(ansiEscapes.cursorNextLine)); // First line unchanged
-	t.false(secondCall.includes('Đây là một bài test phức tạp')); // First line unchanged
-	t.false(secondCall.includes('Line 3')); // Third line unchanged
-});
-
-test('incremental rendering - mixed width characters', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Mix of narrow (ASCII) and wide (emoji, CJK) characters
-	render('Hello 🌍 世界 World');
-	render('Hello 🌍 世界 Updated');
-
-	const secondCall = (stdout.write as any).secondCall.args[0] as string;
-	t.true(secondCall.includes('Updated'));
-});
-
-// =====================================================
-// ANSI Escape Sequence Tests
-// =====================================================
-
-test('incremental rendering - colored text updates', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Using raw ANSI escape codes for green and red
-	const green = '\u001B[32m';
-	const red = '\u001B[31m';
-	const reset = '\u001B[0m';
-
-	render(`${green}Status: Running${reset}`);
-	render(`${red}Status: Error${reset}`);
-
-	const secondCall = (stdout.write as any).secondCall.args[0] as string;
-	t.true(secondCall.includes('Error'));
-});
-
-test('incremental rendering - line with unchanged prefix and changing suffix', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	render('⚙︎ Task Name\n   Running ... 1s');
-	render('⚙︎ Task Name\n   Running ... 2s');
-	render('⚙︎ Task Name\n   Running ... 3s');
-
-	// Each update should only update the second line
-	t.is((stdout.write as any).callCount, 3);
-
-	const secondCall = (stdout.write as any).secondCall.args[0] as string;
-	t.true(secondCall.includes(ansiEscapes.cursorNextLine)); // First line skipped
-	t.true(secondCall.includes('2s'));
-
-	const thirdCall = (stdout.write as any).thirdCall.args[0] as string;
-	t.true(thirdCall.includes(ansiEscapes.cursorNextLine)); // First line skipped
-	t.true(thirdCall.includes('3s'));
-});
-
-test('incremental rendering - line count changes with unicode prefix', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Start with 3 lines
-	render('⚙︎ Task\n   cmd: test\n   Running ... 2s');
-
-	// Change to 4 lines (like when task completes)
-	render('⚙︎ Task\n   cmd: test\n   Executed (exit 0)\n   Done in 10.2s');
-
-	const secondCall = (stdout.write as any).secondCall.args[0] as string;
-
-	// Should include the new line
-	t.true(secondCall.includes('Done in 10.2s'));
-});
-
-test('incremental rendering - preserves spacing with special characters', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Test that spacing around special characters is preserved
-	const line1 = '⚙︎ Task Name';
-	const line2a = '   Status: Running';
-	const line2b = '   Status: Done';
-
-	render(`${line1}\n${line2a}`);
-	const firstOutput = (stdout.write as any).firstCall.args[0] as string;
-
-	render(`${line1}\n${line2b}`);
-	const secondOutput = (stdout.write as any).secondCall.args[0] as string;
-
-	// Verify first line is skipped in second render
-	t.true(secondOutput.includes(ansiEscapes.cursorNextLine));
-	t.false(secondOutput.includes('Task Name'));
-	t.true(secondOutput.includes('Done'));
-
-	// Check the first output has proper structure
-	t.true(firstOutput.includes(line1));
-	t.true(firstOutput.includes(line2a));
-});
-
-// =====================================================
-// Full Flow Integration Test
-// =====================================================
-
-test('incremental rendering - full flow with render, sync, clear, and done', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	// Phase 1: Initial render with Vietnamese text
-	render('⚙︎ Đây là một bài test phức tạp\n   cmd: sleep 10\n   Running ... 0s');
-	t.is((stdout.write as any).callCount, 1);
-	const initialRender = (stdout.write as any).firstCall.args[0] as string;
-	t.true(initialRender.includes('Đây là một bài test phức tạp'));
-	t.true(initialRender.includes('Running ... 0s'));
-
-	// Phase 2: Update timer (simulating running state)
-	render('⚙︎ Đây là một bài test phức tạp\n   cmd: sleep 10\n   Running ... 1s');
-	t.is((stdout.write as any).callCount, 2);
-	const update1 = (stdout.write as any).secondCall.args[0] as string;
-	// First two lines should be skipped (cursorNextLine used)
-	t.true(update1.includes(ansiEscapes.cursorNextLine));
-	t.true(update1.includes('Running ... 1s'));
-	t.false(update1.includes('Đây là một bài test phức tạp')); // First line unchanged
-
-	// Phase 3: Another timer update
-	render('⚙︎ Đây là một bài test phức tạp\n   cmd: sleep 10\n   Running ... 2s');
-	t.is((stdout.write as any).callCount, 3);
-	const update2 = (stdout.write as any).thirdCall.args[0] as string;
-	t.true(update2.includes('Running ... 2s'));
-
-	// Phase 4: Clear and start fresh
-	render.clear();
-	t.is((stdout.write as any).callCount, 4);
-
-	// Phase 5: Sync previous state (no stdout write)
-	render.sync(
-		'⚙︎ Đây là một bài test phức tạp\n   cmd: sleep 10\n   Executed (exit 0)',
-	);
-	t.is((stdout.write as any).callCount, 4); // Sync doesn't write
-
-	// Phase 6: Update from synced state
-	render(
-		'⚙︎ Đây là một bài test phức tạp\n   cmd: sleep 10\n   Executed (exit 0)\n   Done in 10.2s',
-	);
-	t.is((stdout.write as any).callCount, 5);
-	const afterSync = (stdout.write as any).lastCall.args[0] as string;
-	// Should use incremental update from synced state
-	t.true(afterSync.includes('Done in 10.2s'));
-
-	// Phase 7: Mark as done
-	render.done();
-
-	// Phase 8: New render after done (fresh start)
-	render('⚙︎ New task starting\n   Running ...');
-	t.is((stdout.write as any).callCount, 6);
-	const afterDone = (stdout.write as any).lastCall.args[0] as string;
-	// After done(), should be a fresh render
-	t.true(afterDone.includes('New task starting'));
-});
-
-test('incremental rendering - simulating tool call state transitions', t => {
-	const stdout = createStdout();
-	const render = logUpdate.create(stdout, {incremental: true});
-
-	const gearIcon = '⚙︎';
-	const taskName = 'Wait 10s then generate random number';
-
-	// State 1: Running with spinner updates
-	for (let i = 0; i <= 5; i++) {
-		render(
-			`${gearIcon} ${taskName}\n   cmd: sleep 10 && echo $RANDOM\n   Running ... ${i}s`,
-		);
-	}
-
-	// Verify incremental updates happened (6 writes total)
-
-	t.is((stdout.write as any).callCount, 6);
-
-	// Verify the last few updates only changed the timer line
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-call
-	const update5 = (stdout.write as any).getCall(4).args[0] as string;
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-call
-	const update6 = (stdout.write as any).getCall(5).args[0] as string;
-
-	t.true(update5.includes(ansiEscapes.cursorNextLine)); // Skipped unchanged lines
-	t.true(update6.includes(ansiEscapes.cursorNextLine)); // Skipped unchanged lines
-	t.true(update5.includes('4s'));
-	t.true(update6.includes('5s'));
-
-	// State 2: Completed - line count changes
-	render(
-		`${gearIcon} ${taskName}\n   cmd: sleep 10 && echo $RANDOM\n   Executed (exit 0)\n   Done in 10.2s`,
-	);
-
-	t.is((stdout.write as any).callCount, 7);
-
-	const completedRender = (stdout.write as any).lastCall.args[0] as string;
-	t.true(completedRender.includes('Done in 10.2s'));
-	t.true(completedRender.includes('Executed (exit 0)'));
-
-	// Verify first line was still skipped (unchanged)
-	t.true(completedRender.includes(ansiEscapes.cursorNextLine));
 });

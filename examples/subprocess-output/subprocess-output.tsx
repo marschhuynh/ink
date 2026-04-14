@@ -1,8 +1,9 @@
 import childProcess from 'node:child_process';
-import type Buffer from 'node:buffer';
 import React from 'react';
 import stripAnsi from 'strip-ansi';
 import {render, Text, Box} from '../../src/index.js';
+
+const textDecoder = new TextDecoder();
 
 function SubprocessOutput() {
 	const [output, setOutput] = React.useState('');
@@ -14,16 +15,15 @@ function SubprocessOutput() {
 			'examples/jest',
 		]);
 
-		// eslint-disable-next-line @typescript-eslint/ban-types
-		subProcess.stdout.on('data', (newOutput: Buffer) => {
-			const lines = stripAnsi(newOutput.toString('utf8')).split('\n');
+		subProcess.stdout.on('data', (newOutput: Uint8Array) => {
+			const lines = stripAnsi(textDecoder.decode(newOutput)).split('\n');
 			setOutput(lines.slice(-5).join('\n'));
 		});
 	}, [setOutput]);
 
 	return (
 		<Box flexDirection="column" padding={1}>
-			<Text>Сommand output:</Text>
+			<Text>Command output:</Text>
 			<Box marginTop={1}>
 				<Text>{output}</Text>
 			</Box>

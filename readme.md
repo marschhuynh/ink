@@ -24,6 +24,8 @@ Since Ink is a React renderer, all features of React are supported.
 Head over to the [React](https://reactjs.org) website for documentation on how to use it.
 Only Ink's methods are documented in this readme.
 
+**Fully AI-generated pull requests are not accepted. You can use AI, but should be verified and cleaned up by a human. Only Opus 4.6+ (high-effort) and Codex 5.4+ (extra high) are accepted models. Preferably created with Opus and verified by Codex.**
+
 ---
 
 <div align="center">
@@ -41,6 +43,9 @@ Only Ink's methods are documented in this readme.
 ```sh
 npm install ink react
 ```
+
+> [!NOTE]
+> This readme documents the upcoming version of Ink. For the latest stable release, see [Ink on npm](https://www.npmjs.com/package/ink).
 
 ## Usage
 
@@ -69,13 +74,11 @@ render(<Counter />);
 
 <img src="media/demo.svg" width="600">
 
-Feel free to play around with the code and fork this Repl at [https://repl.it/@vadimdemedes/ink-counter-demo](https://repl.it/@vadimdemedes/ink-counter-demo).
-
 ## Who's Using Ink?
 
 - [Claude Code](https://github.com/anthropics/claude-code) - An agentic coding tool made by Anthropic.
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) - An agentic coding tool made by Google.
-- [GitHub Copilot for CLI](https://githubnext.com/projects/copilot-cli) - Just say what you want the shell to do.
+- [GitHub Copilot CLI](https://github.com/features/copilot/cli) - Just say what you want the shell to do.
 - [Canva CLI](https://www.canva.dev/docs/apps/canva-cli/) - CLI for creating and managing Canva Apps.
 - [Cloudflare's Wrangler](https://github.com/cloudflare/wrangler2) - The CLI for Cloudflare Workers.
 - [Linear](https://linear.app) - Linear built an internal CLI for managing deployments, configs, and other housekeeping tasks.
@@ -123,15 +126,18 @@ Feel free to play around with the code and fork this Repl at [https://repl.it/@v
 - [argonaut](https://github.com/darksworm/argonaut) - Manage Argo CD resources.
 - [Qodo Command](https://github.com/qodo-ai/command) - Build, run, and manage AI agents.
 - [Nanocoder](https://github.com/nano-collective/nanocoder) - A community-built, local-first AI coding agent with multi-provider support.
+- [dev3000](https://github.com/vercel-labs/dev3000) - An AI agent MCP orchestrator and developer browser.
 - [Neovate Code](https://github.com/neovateai/neovate-code) - An agentic coding tool made by AntGroup.
 - [instagram-cli](https://github.com/supreme-gg-gg/instagram-cli) - Instagram client.
 - [ElevenLabs CLI](https://github.com/elevenlabs/cli) - ElevenLabs agents client.
+- [SSH AI Chat](https://github.com/miantiao-me/ssh-ai-chat) - Chat with AI over SSH.
 
-*(PRs welcome. Append new entries at the end. Repos must have 100+ stars and showcase Ink beyond a basic list picker.)*
+_(PRs welcome. Append new entries at the end. Repos must have 100+ stars and showcase Ink beyond a basic list picker.)_
 
 ## Contents
 
 - [Getting Started](#getting-started)
+- [App Lifecycle](#app-lifecycle)
 - [Components](#components)
   - [`<Text>`](#text)
   - [`<Box>`](#box)
@@ -141,19 +147,26 @@ Feel free to play around with the code and fork this Repl at [https://repl.it/@v
   - [`<Transform>`](#transform)
 - [Hooks](#hooks)
   - [`useInput`](#useinputinputhandler-options)
+  - [`usePaste`](#usepastehandler-options)
   - [`useApp`](#useapp)
   - [`useStdin`](#usestdin)
   - [`useStdout`](#usestdout)
+  - [`useBoxMetrics`](#useboxmetricsref)
   - [`useStderr`](#usestderr)
+  - [`useWindowSize`](#usewindowsize)
   - [`useFocus`](#usefocusoptions)
   - [`useFocusManager`](#usefocusmanager)
+  - [`useCursor`](#usecursor)
+  - [`useAnimation`](#useanimationoptions)
 - [API](#api)
 - [Testing](#testing)
 - [Using React Devtools](#using-react-devtools)
 - [Screen Reader Support](#screen-reader-support)
 - [Useful Components](#useful-components)
 - [Useful Hooks](#useful-hooks)
+- [Recipes](#recipes)
 - [Examples](#examples)
+- [Continuous Integration](#continuous-integration)
 
 ## Getting Started
 
@@ -220,6 +233,22 @@ Think of it as if every `<div>` in the browser had `display: flex`.
 See [`<Box>`](#box) built-in component below for documentation on how to use Flexbox layouts in Ink.
 Note that all text must be wrapped in a [`<Text>`](#text) component.
 
+## App Lifecycle
+
+An Ink app is a Node.js process, so it stays alive only while there is active work in the event loop (timers, pending promises, [`useInput`](#useinputinputhandler-options) listening on `stdin`, etc.). If your component tree has no async work, the app will render once and exit immediately.
+
+To exit the app, press **Ctrl+C** (enabled by default via [`exitOnCtrlC`](#exitonctrlc)), call [`exit()`](#exiterrororresult) from [`useApp`](#useapp) inside a component, or call [`unmount()`](#unmount) on the object returned by [`render()`](#rendertree-options).
+
+Use [`waitUntilExit()`](#waituntilexit) to run code after the app is unmounted:
+
+```jsx
+const {waitUntilExit} = render(<MyApp />);
+
+await waitUntilExit();
+
+console.log('App exited');
+```
+
 ## Components
 
 ### `<Text>`
@@ -247,7 +276,8 @@ const Example = () => (
 render(<Example />);
 ```
 
-**Note:** `<Text>` allows only text nodes and nested `<Text>` components inside of it. For example, `<Box>` component can't be used inside `<Text>`.
+> [!NOTE]
+> `<Text>` allows only text nodes and nested `<Text>` components inside of it. For example, `<Box>` component can't be used inside `<Text>`.
 
 #### color
 
@@ -339,11 +369,12 @@ Invert background and foreground colors.
 #### wrap
 
 Type: `string`\
-Allowed values: `wrap` `truncate` `truncate-start` `truncate-middle` `truncate-end`\
+Allowed values: `wrap` `hard` `truncate` `truncate-start` `truncate-middle` `truncate-end`\
 Default: `wrap`
 
 This property tells Ink to wrap or truncate text if its width is larger than the container.
 If `wrap` is passed (the default), Ink will wrap text and split it into multiple lines.
+If `hard` is passed, Ink will fill each line to the full column width, breaking words as necessary.
 If `truncate-*` is passed, Ink will truncate text instead, resulting in one line of text with the rest cut off.
 
 ```jsx
@@ -351,6 +382,11 @@ If `truncate-*` is passed, Ink will truncate text instead, resulting in one line
 	<Text>Hello World</Text>
 </Box>
 //=> 'Hello\nWorld'
+
+<Box width={7}>
+	<Text wrap="hard">Hello World</Text>
+</Box>
+//=> 'Hello W\norld'
 
 // `truncate` is an alias to `truncate-end`
 <Box width={7}>
@@ -445,10 +481,32 @@ Percentages aren't supported yet; see https://github.com/facebook/yoga/issues/87
 
 ##### minHeight
 
+Type: `number` `string`
+
+Sets a minimum height of the element in lines (rows).
+You can also set it as a percentage, which will calculate the minimum height based on the height of the parent element.
+
+##### maxWidth
+
 Type: `number`
 
-Sets a minimum height of the element.
+Sets a maximum width of the element.
 Percentages aren't supported yet; see https://github.com/facebook/yoga/issues/872.
+
+##### maxHeight
+
+Type: `number` `string`
+
+Sets a maximum height of the element in lines (rows).
+You can also set it as a percentage, which will calculate the maximum height based on the height of the parent element.
+
+##### aspectRatio
+
+Type: `number`
+
+Defines the aspect ratio (width/height) for the element.
+
+Use it with at least one size constraint (`width`, `height`, `minHeight`, or `maxHeight`) so Ink can derive the missing dimension.
 
 #### Padding
 
@@ -754,7 +812,7 @@ See [flex-wrap](https://css-tricks.com/almanac/properties/f/flex-wrap/).
 ##### alignItems
 
 Type: `string`\
-Allowed values: `flex-start` `center` `flex-end`
+Allowed values: `flex-start` `center` `flex-end` `stretch` `baseline`
 
 See [align-items](https://css-tricks.com/almanac/properties/a/align-items/).
 
@@ -812,7 +870,7 @@ See [align-items](https://css-tricks.com/almanac/properties/a/align-items/).
 
 Type: `string`\
 Default: `auto`\
-Allowed values: `auto` `flex-start` `center` `flex-end`
+Allowed values: `auto` `flex-start` `center` `flex-end` `stretch` `baseline`
 
 See [align-self](https://css-tricks.com/almanac/properties/a/align-self/).
 
@@ -844,6 +902,16 @@ See [align-self](https://css-tricks.com/almanac/properties/a/align-self/).
 //
 // X
 ```
+
+##### alignContent
+
+Type: `string`\
+Default: `flex-start`\
+Allowed values: `flex-start` `flex-end` `center` `stretch` `space-between` `space-around` `space-evenly`
+
+Defines alignment between flex lines on the cross axis when `flexWrap` creates multiple lines.
+See [align-content](https://css-tricks.com/almanac/properties/a/align-content/).
+Unlike CSS (`stretch`), Ink defaults to `flex-start` so wrapped lines stay compact and fixed-height boxes don't gain unexpected empty rows unless you opt in to stretching.
 
 ##### justifyContent
 
@@ -886,6 +954,46 @@ See [justify-content](https://css-tricks.com/almanac/properties/j/justify-conten
 </Box>
 // [   X   Y   ]
 ```
+
+#### Position
+
+##### position
+
+Type: `string`\
+Allowed values: `relative` `absolute` `static`\
+Default: `relative`
+
+Controls how the element is positioned.
+
+When `position` is `static`, `top`, `right`, `bottom`, and `left` are ignored.
+
+##### top
+
+Type: `number` `string`
+
+Top offset for positioned elements.
+You can also set it as a percentage of the parent size.
+
+##### right
+
+Type: `number` `string`
+
+Right offset for positioned elements.
+You can also set it as a percentage of the parent size.
+
+##### bottom
+
+Type: `number` `string`
+
+Bottom offset for positioned elements.
+You can also set it as a percentage of the parent size.
+
+##### left
+
+Type: `number` `string`
+
+Left offset for positioned elements.
+You can also set it as a percentage of the parent size.
 
 #### Visibility
 
@@ -982,7 +1090,7 @@ Alternatively, pass a custom border style like so:
 		bottomLeft: '↗',
 		bottom: '↑',
 		bottomRight: '↖',
-		right: '←'
+		right: '←',
 	}}
 >
 	<Text>Custom</Text>
@@ -1023,7 +1131,7 @@ Accepts the same values as [`color`](#color) in `<Text>` component.
 
 Type: `string`
 
-Change right border color.
+Change the right border color.
 Accepts the same values as [`color`](#color) in `<Text>` component.
 
 ```jsx
@@ -1036,7 +1144,7 @@ Accepts the same values as [`color`](#color) in `<Text>` component.
 
 Type: `string`
 
-Change bottom border color.
+Change the bottom border color.
 Accepts the same values as [`color`](#color) in `<Text>` component.
 
 ```jsx
@@ -1049,7 +1157,7 @@ Accepts the same values as [`color`](#color) in `<Text>` component.
 
 Type: `string`
 
-Change left border color.
+Change the left border color.
 Accepts the same values as [`color`](#color) in `<Text>` component.
 
 ```jsx
@@ -1124,33 +1232,103 @@ Dim the right border color.
 </Box>
 ```
 
+##### borderBackgroundColor
+
+Type: `string`
+
+Change border background color.
+Accepts the same values as [`backgroundColor`](#backgroundcolor) in `<Text>` component.
+A shorthand for setting `borderTopBackgroundColor`, `borderRightBackgroundColor`, `borderBottomBackgroundColor`, and `borderLeftBackgroundColor`.
+
+```jsx
+<Box borderStyle="round" borderColor="white" borderBackgroundColor="green">
+	<Text>Hello world</Text>
+</Box>
+```
+
+##### borderTopBackgroundColor
+
+Type: `string`
+
+Change top border background color.
+Accepts the same values as [`backgroundColor`](#backgroundcolor) in `<Text>` component.
+Falls back to `borderBackgroundColor` if not specified.
+
+```jsx
+<Box borderStyle="round" borderColor="white" borderTopBackgroundColor="green">
+	<Text>Hello world</Text>
+</Box>
+```
+
+##### borderBottomBackgroundColor
+
+Type: `string`
+
+Change bottom border background color.
+Accepts the same values as [`backgroundColor`](#backgroundcolor) in `<Text>` component.
+Falls back to `borderBackgroundColor` if not specified.
+
+```jsx
+<Box borderStyle="round" borderColor="white" borderBottomBackgroundColor="green">
+	<Text>Hello world</Text>
+</Box>
+```
+
+##### borderRightBackgroundColor
+
+Type: `string`
+
+Change right border background color.
+Accepts the same values as [`backgroundColor`](#backgroundcolor) in `<Text>` component.
+Falls back to `borderBackgroundColor` if not specified.
+
+```jsx
+<Box borderStyle="round" borderColor="white" borderRightBackgroundColor="green">
+	<Text>Hello world</Text>
+</Box>
+```
+
+##### borderLeftBackgroundColor
+
+Type: `string`
+
+Change left border background color.
+Accepts the same values as [`backgroundColor`](#backgroundcolor) in `<Text>` component.
+Falls back to `borderBackgroundColor` if not specified.
+
+```jsx
+<Box borderStyle="round" borderColor="white" borderLeftBackgroundColor="green">
+	<Text>Hello world</Text>
+</Box>
+```
+
 ##### borderTop
 
 Type: `boolean`\
 Default: `true`
 
-Determines whether top border is visible.
+Determines whether the top border is visible.
 
 ##### borderRight
 
 Type: `boolean`\
 Default: `true`
 
-Determines whether right border is visible.
+Determines whether the right border is visible.
 
 ##### borderBottom
 
 Type: `boolean`\
 Default: `true`
 
-Determines whether bottom border is visible.
+Determines whether the bottom border is visible.
 
 ##### borderLeft
 
 Type: `boolean`\
 Default: `true`
 
-Determines whether left border is visible.
+Determines whether the left border is visible.
 
 #### Background
 
@@ -1168,11 +1346,23 @@ Accepts the same values as [`color`](#color) in the `<Text>` component.
 		<Text>Red background</Text>
 	</Box>
 
-	<Box backgroundColor="#FF8800" width={20} height={3} marginTop={1} alignSelf="flex-start">
+	<Box
+		backgroundColor="#FF8800"
+		width={20}
+		height={3}
+		marginTop={1}
+		alignSelf="flex-start"
+	>
 		<Text>Orange background</Text>
 	</Box>
 
-	<Box backgroundColor="rgb(0, 255, 0)" width={20} height={3} marginTop={1} alignSelf="flex-start">
+	<Box
+		backgroundColor="rgb(0, 255, 0)"
+		width={20}
+		height={3}
+		marginTop={1}
+		alignSelf="flex-start"
+	>
 		<Text>Green background</Text>
 	</Box>
 </Box>
@@ -1191,7 +1381,12 @@ The background color fills the entire `<Box>` area and is inherited by child `<T
 Background colors work with borders and padding:
 
 ```jsx
-<Box backgroundColor="cyan" borderStyle="round" padding={1} alignSelf="flex-start">
+<Box
+	backgroundColor="cyan"
+	borderStyle="round"
+	padding={1}
+	alignSelf="flex-start"
+>
 	<Text>Background with border and padding</Text>
 </Box>
 ```
@@ -1300,8 +1495,8 @@ const Example = () => {
 					...previousTests,
 					{
 						id: previousTests.length,
-						title: `Test #${previousTests.length + 1}`
-					}
+						title: `Test #${previousTests.length + 1}`,
+					},
 				]);
 
 				timer = setTimeout(run, 100);
@@ -1337,9 +1532,8 @@ const Example = () => {
 render(<Example />);
 ```
 
-**Note:** `<Static>` only renders new items in the `items` prop and ignores items
-that were previously rendered. This means that when you add new items to the `items`
-array, changes you make to previous items will not trigger a rerender.
+> [!NOTE]
+> `<Static>` only renders new items in the `items` prop and ignores items that were previously rendered. This means that when you add new items to the `items` array, changes you make to previous items will not trigger a rerender.
 
 See [examples/static](examples/static/static.tsx) for an example usage of `<Static>` component.
 
@@ -1394,7 +1588,11 @@ For example, you might want to apply a [gradient to text](https://github.com/sin
 These use cases can't accept React nodes as input; they expect a string.
 That's what the `<Transform>` component does: it gives you an output string of its child components and lets you transform it in any way.
 
-**Note:** `<Transform>` must be applied only to `<Text>` children components and shouldn't change the dimensions of the output; otherwise, the layout will be incorrect.
+> [!NOTE]
+> `<Transform>` must be applied only to `<Text>` children components and shouldn't change the dimensions of the output; otherwise, the layout will be incorrect.
+
+> [!IMPORTANT]
+> When children use `<Text>` styling props (e.g. `color`, `bold`), the string passed to `transform` will contain [ANSI escape codes](https://en.wikipedia.org/wiki/ANSI_escape_code). If your transform manipulates whitespace or does string operations like `.trim()`, you may need to use ANSI-aware methods (e.g. from [`slice-ansi`](https://github.com/chalk/slice-ansi) or [`strip-ansi`](https://github.com/chalk/strip-ansi)).
 
 ```jsx
 import {render, Transform} from 'ink';
@@ -1417,12 +1615,11 @@ For example, to implement a hanging indent component, you can indent all the lin
 ```jsx
 import {render, Transform} from 'ink';
 
-const HangingIndent = ({content, indent = 4, children, ...props}) => (
+const HangingIndent = ({indent = 4, children}) => (
 	<Transform
 		transform={(line, index) =>
 			index === 0 ? line : ' '.repeat(indent) + line
 		}
-		{...props}
 	>
 		{children}
 	</Transform>
@@ -1436,12 +1633,7 @@ const text =
 	'of my hands only. I lived there two years and two months. At ' +
 	'present I am a sojourner in civilized life again.';
 
-// Other text properties are allowed as well
-render(
-	<HangingIndent bold dimColor indent={4}>
-		{text}
-	</HangingIndent>
-);
+render(<HangingIndent indent={4}>{text}</HangingIndent>);
 ```
 
 #### transform(outputLine, index)
@@ -1467,7 +1659,7 @@ The zero-indexed line number of the line that's currently being transformed.
 
 ### useInput(inputHandler, options?)
 
-This hook is used for handling user input.
+A React hook that returns `void` and handles user input.
 It's a more convenient alternative to using `useStdin` and listening for `data` events.
 The callback you pass to `useInput` is called for each character when the user enters any input.
 However, if the user pastes text and it's more than one character, the callback will be called only once, and the whole string will be passed as `input`.
@@ -1582,12 +1774,57 @@ Default: `false`
 If the Page Up or Page Down key was pressed, the corresponding property will be `true`.
 For example, if the user presses Page Down, `key.pageDown` equals `true`.
 
+###### key.home
+
+###### key.end
+
+Type: `boolean`\
+Default: `false`
+
+If the Home or End key was pressed, the corresponding property will be `true`.
+For example, if the user presses End, `key.end` equals `true`.
+
 ###### key.meta
 
 Type: `boolean`\
 Default: `false`
 
 [Meta key](https://en.wikipedia.org/wiki/Meta_key) was pressed.
+
+###### key.super
+
+Type: `boolean`\
+Default: `false`
+
+Super key (Cmd on macOS, Win on Windows) was pressed. Requires [kitty keyboard protocol](#kittykeyboard).
+
+###### key.hyper
+
+Type: `boolean`\
+Default: `false`
+
+Hyper key was pressed. Requires [kitty keyboard protocol](#kittykeyboard).
+
+###### key.capsLock
+
+Type: `boolean`\
+Default: `false`
+
+Caps Lock was active. Requires [kitty keyboard protocol](#kittykeyboard).
+
+###### key.numLock
+
+Type: `boolean`\
+Default: `false`
+
+Num Lock was active. Requires [kitty keyboard protocol](#kittykeyboard).
+
+###### key.eventType
+
+Type: `'press' | 'repeat' | 'release'`\
+Default: `undefined`
+
+The type of key event. Only available with [kitty keyboard protocol](#kittykeyboard). Without the protocol, this property is `undefined`.
 
 #### options
 
@@ -1601,23 +1838,77 @@ Default: `true`
 Enable or disable capturing of user input.
 Useful when there are multiple `useInput` hooks used at once to avoid handling the same input several times.
 
+### usePaste(handler, options?)
+
+A React hook that calls `handler` whenever the user pastes text. Bracketed paste mode (`\x1b[?2004h`) is automatically enabled while the hook is active, so pasted text arrives as a single string rather than being misinterpreted as individual key presses.
+
+`usePaste` and `useInput` can be used together in the same component. They operate on separate event channels, so paste content is never forwarded to `useInput` handlers when `usePaste` is active.
+
+```jsx
+import {useInput, usePaste} from 'ink';
+
+const MyInput = () => {
+	useInput((input, key) => {
+		// Only receives typed characters and key events, not pasted text.
+		if (key.return) {
+			// Submit
+		}
+	});
+
+	usePaste((text) => {
+		// Receives the full pasted string, including newlines.
+		console.log('Pasted:', text);
+	});
+
+	return …
+};
+```
+
+#### handler(text)
+
+Type: `Function`
+
+Called with the full pasted string whenever the user pastes text. The string is delivered verbatim — newlines, escape sequences, and other special characters are preserved exactly as pasted.
+
+##### text
+
+Type: `string`
+
+The pasted text.
+
+#### options
+
+Type: `object`
+
+##### isActive
+
+Type: `boolean`\
+Default: `true`
+
+Enable or disable the paste handler. Useful when multiple components use `usePaste` and only one should be active at a time.
+
 ### useApp()
 
-`useApp` is a React hook that exposes a method to manually exit the app (unmount).
+A React hook that returns app lifecycle methods.
 
-#### exit(error?)
+#### exit(errorOrResult?)
 
 Type: `Function`
 
 Exit (unmount) the whole Ink app.
 
-##### error
+##### errorOrResult
 
-Type: `Error`
+Type: `Error | unknown`
 
-Optional error. If passed, [`waitUntilExit`](waituntilexit) will reject with that error.
+Optional value that controls how [`waitUntilExit`](#waituntilexit) settles:
+
+- `exit()` resolves with `undefined`.
+- `exit(error)` rejects when `error` is an `Error`.
+- `exit(value)` resolves with `value`.
 
 ```js
+import {useEffect} from 'react';
 import {useApp} from 'ink';
 
 const Example = () => {
@@ -1628,15 +1919,39 @@ const Example = () => {
 		setTimeout(() => {
 			exit();
 		}, 5000);
-	}, []);
+	}, [exit]);
 
 	return …
 };
 ```
 
+#### waitUntilRenderFlush()
+
+Type: `Function`
+
+Returns a promise that settles after pending render output is flushed to stdout.
+
+```js
+import {useEffect} from 'react';
+import {useApp} from 'ink';
+
+const Example = () => {
+	const {waitUntilRenderFlush} = useApp();
+
+	useEffect(() => {
+		void (async () => {
+			await waitUntilRenderFlush();
+			runNextCommand();
+		})();
+	}, [waitUntilRenderFlush]);
+
+	return …;
+};
+```
+
 ### useStdin()
 
-`useStdin` is a React hook that exposes the stdin stream.
+A React hook that returns the stdin stream and stdin-related utilities.
 
 #### stdin
 
@@ -1710,7 +2025,7 @@ const Example = () => {
 
 ### useStdout()
 
-`useStdout` is a React hook that exposes the stdout stream where Ink renders your app.
+A React hook that returns the stdout stream where Ink renders your app and stdout-related utilities.
 
 #### stdout
 
@@ -1756,9 +2071,73 @@ const Example = () => {
 
 See additional usage example in [examples/use-stdout](examples/use-stdout/use-stdout.tsx).
 
+### useBoxMetrics(ref)
+
+A React hook that returns the current layout metrics for a tracked box element.
+It updates when layout changes (for example terminal resize, sibling/content changes, or position changes).
+
+Use `hasMeasured` to detect when the currently tracked element has been measured.
+
+#### ref
+
+Type: `React.RefObject<DOMElement>`
+
+A ref to the `<Box>` element to track.
+
+```jsx
+import {useRef} from 'react';
+import {Box, Text, useBoxMetrics} from 'ink';
+
+const Example = () => {
+	const ref = useRef(null);
+	const {width, height, left, top, hasMeasured} = useBoxMetrics(ref);
+
+	return (
+		<Box ref={ref}>
+			<Text>
+				{hasMeasured ? `${width}x${height} at ${left},${top}` : 'Measuring...'}
+			</Text>
+		</Box>
+	);
+};
+```
+
+#### width
+
+Type: `number`
+
+Element width.
+
+#### height
+
+Type: `number`
+
+Element height.
+
+#### left
+
+Type: `number`
+
+Distance from the left edge of the parent.
+
+#### top
+
+Type: `number`
+
+Distance from the top edge of the parent.
+
+#### hasMeasured
+
+Type: `boolean`
+
+Whether the currently tracked element has been measured.
+
+> [!NOTE]
+> The hook returns `{width: 0, height: 0, left: 0, top: 0}` until the first layout pass completes. It also returns zeros when the tracked ref is detached.
+
 ### useStderr()
 
-`useStderr` is a React hook that exposes the stderr stream.
+A React hook that returns the stderr stream and stderr-related utilities.
 
 #### stderr
 
@@ -1805,8 +2184,42 @@ const Example = () => {
 };
 ```
 
+### useWindowSize()
+
+A React hook that returns the current terminal dimensions and re-renders the component whenever the terminal is resized.
+
+```js
+import {Text, useWindowSize} from 'ink';
+
+const Example = () => {
+	const {columns, rows} = useWindowSize();
+
+	return (
+		<Text>
+			{columns}x{rows}
+		</Text>
+	);
+};
+```
+
+#### columns
+
+Type: `number`
+
+Number of columns (horizontal character cells).
+
+#### rows
+
+Type: `number`
+
+Number of rows (vertical character cells).
+
+> [!NOTE]
+> When the terminal is resized narrower, ghost lines may briefly appear depending on the terminal emulator's reflow behavior.
+
 ### useFocus(options?)
 
+A React hook that returns focus state and focus controls for the current component.
 A component that uses the `useFocus` hook becomes "focusable" to Ink, so when the user presses <kbd>Tab</kbd>, Ink will switch focus to this component.
 If there are multiple components that execute the `useFocus` hook, focus will be given to them in the order in which these components are rendered.
 This hook returns an object with an `isFocused` boolean property, which determines whether this component is focused.
@@ -1851,13 +2264,14 @@ See example in [examples/use-focus](examples/use-focus/use-focus.tsx) and [examp
 
 ### useFocusManager()
 
-This hook exposes methods to enable or disable focus management for all components or manually switch focus to next or previous components.
+A React hook that returns methods to manage focus across focusable components.
 
 #### enableFocus()
 
 Enable focus management for all components.
 
-**Note:** You don't need to call this method manually unless you've disabled focus management. Focus management is enabled by default.
+> [!NOTE]
+> You don't need to call this method manually unless you've disabled focus management. Focus management is enabled by default.
 
 ```js
 import {useFocusManager} from 'ink';
@@ -1898,7 +2312,8 @@ Switch focus to the next focusable component.
 If there's no active component right now, focus will be given to the first focusable component.
 If the active component is the last in the list of focusable components, focus will be switched to the first focusable component.
 
-**Note:** Ink calls this method when user presses <kbd>Tab</kbd>.
+> [!NOTE]
+> Ink calls this method when user presses <kbd>Tab</kbd>.
 
 ```js
 import {useFocusManager} from 'ink';
@@ -1920,7 +2335,8 @@ Switch focus to the previous focusable component.
 If there's no active component right now, focus will be given to the first focusable component.
 If the active component is the first in the list of focusable components, focus will be switched to the last focusable component.
 
-**Note:** Ink calls this method when user presses <kbd>Shift</kbd>+<kbd>Tab</kbd>.
+> [!NOTE]
+> Ink calls this method when user presses <kbd>Shift</kbd>+<kbd>Tab</kbd>.
 
 ```js
 import {useFocusManager} from 'ink';
@@ -1943,7 +2359,7 @@ const Example = () => {
 Type: `string`
 
 Switch focus to the component with the given [`id`](#id).
-If there's no component with that ID, focus will be given to the next focusable component.
+If there's no component with that ID, focus is not changed.
 
 ```js
 import {useFocusManager, useInput} from 'ink';
@@ -1962,9 +2378,79 @@ const Example = () => {
 };
 ```
 
+#### activeId
+
+Type: `string | undefined`
+
+The ID of the currently focused component, or `undefined` if no component is focused.
+
+```js
+import {Text, useFocusManager} from 'ink';
+
+const Example = () => {
+	const {activeId} = useFocusManager();
+
+	return <Text>Focused: {activeId ?? 'none'}</Text>;
+};
+```
+
+### useCursor()
+
+A React hook that returns methods to control the terminal cursor position after each render.
+This is essential for IME (Input Method Editor) support, where the composing character is displayed at the cursor location.
+
+```jsx
+import {useState} from 'react';
+import {Box, Text, useCursor} from 'ink';
+import stringWidth from 'string-width';
+
+const TextInput = () => {
+	const [text, setText] = useState('');
+	const {setCursorPosition} = useCursor();
+
+	const prompt = '> ';
+	setCursorPosition({x: stringWidth(prompt + text), y: 1});
+
+	return (
+		<Box flexDirection="column">
+			<Text>Type here:</Text>
+			<Text>
+				{prompt}
+				{text}
+			</Text>
+		</Box>
+	);
+};
+```
+
+#### setCursorPosition(position)
+
+Set the cursor position relative to the Ink output. Pass `undefined` to hide the cursor.
+
+##### position
+
+Type: `object | undefined`
+
+Use [`string-width`](https://github.com/sindresorhus/string-width) to calculate `x` for strings containing wide characters (CJK, emoji).
+
+See a full example at [examples/cursor-ime](examples/cursor-ime/cursor-ime.tsx).
+
+###### x
+
+Type: `number`
+
+Column position (0-based).
+
+###### y
+
+Type: `number`
+
+Row position from the top of the Ink output (0 = first line).
+
 ### useIsScreenReaderEnabled()
 
-Returns whether a screen reader is enabled. This is useful when you want to render different output for screen readers.
+A React hook that returns whether a screen reader is enabled.
+This is useful when you want to render different output for screen readers.
 
 ```jsx
 import {useIsScreenReaderEnabled, Text} from 'ink';
@@ -1982,6 +2468,65 @@ const Example = () => {
 };
 ```
 
+### useAnimation(options?)
+
+A React hook that drives animations. Returns a frame counter, elapsed time, frame delta, and a reset function. All animations share a single timer internally, so multiple animated components consolidate into one render cycle.
+
+```jsx
+import {Text, useAnimation} from 'ink';
+
+const Spinner = () => {
+	const {frame} = useAnimation({interval: 80});
+	const characters = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+	return <Text>{characters[frame % characters.length]}</Text>;
+};
+```
+
+#### options
+
+Type: `object`
+
+##### interval
+
+Type: `number`\
+Default: `100`
+
+Time between ticks in milliseconds.
+
+##### isActive
+
+Type: `boolean`\
+Default: `true`
+
+Whether the animation is running. When set to `false`, the animation stops. When toggled back to `true`, all values reset to `0`.
+
+#### Return value
+
+##### frame
+
+Type: `number`
+
+Discrete counter that increments by 1 each interval. Useful for indexed sequences like spinner frames.
+
+##### time
+
+Type: `number`
+
+Total elapsed time in milliseconds since the animation started or was last reset. Useful for continuous math-based animations like sine waves: `Math.sin(time / 1000 * Math.PI * 2)`.
+
+##### delta
+
+Type: `number`
+
+Time in milliseconds since the previous rendered tick. Accounts for throttled renders. Useful for physics-based or velocity-driven motion: `position += speed * delta`.
+
+##### reset
+
+Type: `() => void`
+
+Resets `frame`, `time`, and `delta` to `0` and restarts timing from the current moment. Useful for one-shot animations triggered by events.
+
 ## API
 
 #### render(tree, options?)
@@ -1992,7 +2537,7 @@ Mount a component and render the output.
 
 ##### tree
 
-Type: `ReactElement`
+Type: `ReactNode`
 
 ##### options
 
@@ -2003,7 +2548,7 @@ Type: `object`
 Type: `stream.Writable`\
 Default: `process.stdout`
 
-Output stream where app will be rendered.
+Output stream where the app will be rendered.
 
 ###### stdin
 
@@ -2036,6 +2581,8 @@ Patch console methods to ensure console output doesn't mix with Ink's output.
 When any of the `console.*` methods are called (like `console.log()`), Ink intercepts their output, clears the main output, renders output from the console method, and then rerenders the main output again.
 That way, both are visible and don't overlap each other.
 
+Once unmount starts, Ink restores the native console before React cleanup runs. Teardown-time `console.*` output then follows the normal console behavior instead of being rerouted through Ink.
+
 This functionality is powered by [patch-console](https://github.com/vadimdemedes/patch-console), so if you need to disable Ink's interception of output but want to build something custom, you can use that.
 
 ###### onRender
@@ -2043,7 +2590,16 @@ This functionality is powered by [patch-console](https://github.com/vadimdemedes
 Type: `({renderTime: number}) => void`\
 Default: `undefined`
 
-Runs the given callback after each render and re-render with a metrics object.
+Runs the given callback after each render and re-render with render metrics.
+This callback runs after Ink commits a frame, but it does not wait for `stdout`/`stderr` stream callbacks.
+To run code after output is flushed, use [`waitUntilRenderFlush()`](#waituntilrenderflush).
+
+###### isScreenReaderEnabled
+
+Type: `boolean`\
+Default: `process.env['INK_SCREEN_READER'] === 'true'`
+
+Enable screen reader support. See [Screen Reader Support](#screen-reader-support).
 
 ###### debug
 
@@ -2070,17 +2626,187 @@ Default: `false`
 Enable incremental rendering mode which only updates changed lines instead of redrawing the entire output.
 This can reduce flickering and improve performance for frequently updating UIs.
 
+###### concurrent
+
+Type: `boolean`\
+Default: `false`
+
+Enable React Concurrent Rendering mode.
+
+When enabled:
+
+- Suspense boundaries work correctly with async data fetching
+- `useTransition` and `useDeferredValue` hooks are fully functional
+- Updates can be interrupted for higher priority work
+
+```jsx
+render(<MyApp />, {concurrent: true});
+```
+
+> [!NOTE]
+> Concurrent mode changes the timing of renders. Some tests may need to use `act()` to properly await updates. Reusing the same stdout across multiple `render()` calls without unmounting is unsupported. Call `unmount()` first if you need to change the rendering mode or create a fresh instance.
+
+###### interactive
+
+Type: `boolean`\
+Default: `true` (`false` if in CI (detected via [`is-in-ci`](https://github.com/sindresorhus/is-in-ci)) or `stdout.isTTY` is falsy)
+
+Override automatic interactive mode detection.
+
+By default, Ink detects whether the environment is interactive based on CI detection and `stdout.isTTY`. When non-interactive, Ink skips terminal-specific features like ANSI erase sequences, cursor manipulation, synchronized output, resize handling, and kitty keyboard auto-detection. Only the final frame of non-static output is written at unmount.
+
+Most users should not need to set this option. Use it when you have your own "interactive" detection logic that differs from the built-in behavior.
+
+> [!NOTE]
+> Reusing the same stdout across multiple `render()` calls without unmounting is unsupported. Call `unmount()` first if you need to change this option or create a fresh instance.
+
+```jsx
+// Use your own detection logic
+const isInteractive = myCustomDetection();
+render(<MyApp />, {interactive: isInteractive});
+```
+
+###### alternateScreen
+
+Type: `boolean`\
+Default: `false`
+
+Render the app in the terminal's alternate screen buffer. When enabled, the app renders on a separate screen, and the original terminal content is restored when the app exits. This is the same mechanism used by programs like vim, htop, and less.
+
+Note: The terminal's scrollback buffer is not available while in the alternate screen. This is standard terminal behavior; programs like vim use the alternate screen specifically to avoid polluting the user's scrollback history.
+
+Ink intentionally treats alternate-screen teardown output as disposable. It does not preserve or replay teardown-time frames, hook writes, or `console.*` output after restoring the primary screen.
+
+Only works in interactive mode. Ignored when `interactive` is `false` or in a non-interactive environment (CI, piped stdout).
+
+> [!NOTE]
+> Reusing the same stdout across multiple `render()` calls without unmounting is unsupported. Call `unmount()` first if you need to change this option or create a fresh instance.
+
+```jsx
+render(<MyApp />, {alternateScreen: true});
+```
+
+###### kittyKeyboard
+
+Type: `object`\
+Default: `undefined`
+
+Enable the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) for enhanced keyboard input handling. When enabled, terminals that support the protocol will report additional key information including `super`, `hyper`, `capsLock`, `numLock` modifiers and `eventType` (press/repeat/release).
+
+```jsx
+import {render} from 'ink';
+
+render(<MyApp />, {kittyKeyboard: {mode: 'auto'}});
+```
+
+```jsx
+import {render} from 'ink';
+
+render(<MyApp />, {
+	kittyKeyboard: {
+		mode: 'enabled',
+		flags: ['disambiguateEscapeCodes', 'reportEventTypes'],
+	},
+});
+```
+
+**kittyKeyboard.mode**
+
+Type: `'auto' | 'enabled' | 'disabled'`\
+Default: `'auto'`
+
+- `'auto'`: Detect terminal support using a heuristic precheck (known terminals like kitty, WezTerm, Ghostty) followed by a protocol query confirmation (`CSI ? u`). The protocol is only enabled if the terminal responds to the query within a short timeout.
+- `'enabled'`: Force enable the protocol. Both stdin and stdout must be TTYs.
+- `'disabled'`: Never enable the protocol.
+
+**kittyKeyboard.flags**
+
+Type: `string[]`\
+Default: `['disambiguateEscapeCodes']`
+
+Protocol flags to request from the terminal. Pass an array of flag name strings.
+
+Available flags:
+
+- `'disambiguateEscapeCodes'` - Disambiguate escape codes
+- `'reportEventTypes'` - Report key press, repeat, and release events
+- `'reportAlternateKeys'` - Report alternate key encodings
+- `'reportAllKeysAsEscapeCodes'` - Report all keys as escape codes
+- `'reportAssociatedText'` - Report associated text with key events
+
+**Behavior notes**
+
+When the kitty keyboard protocol is enabled, input handling changes in several ways:
+
+- **Non-printable keys produce empty input.** Keys like function keys (F1-F35), modifier-only keys (Shift, Control, Super), media keys, Caps Lock, Print Screen, and similar keys will not produce any text in the `input` parameter of `useInput`. They can still be detected via the `key` object properties.
+- **Ctrl+letter shortcuts work as expected.** When the terminal sends `Ctrl+letter` as codepoint 1-26 (the kitty CSI-u alternate form), `input` is set to the letter name (e.g. `'c'` for `Ctrl+C`) and `key.ctrl` is `true`. This ensures `exitOnCtrlC` and custom `Ctrl+letter` handlers continue to work regardless of which codepoint form the terminal uses.
+- **Key disambiguation.** The protocol allows the terminal to distinguish between keys that normally produce the same escape sequence. For example:
+  - `Ctrl+I` vs `Tab` - without the protocol, both produce the same byte (`\x09`). With the protocol, they are reported as distinct keys.
+  - `Shift+Enter` vs `Enter` - the shift modifier is correctly reported.
+  - `Escape` key vs `Ctrl+[` - these are disambiguated.
+- **Event types.** With the `reportEventTypes` flag, key press, repeat, and release events are distinguished via `key.eventType`.
+
+#### renderToString(tree, options?)
+
+Returns: `string`
+
+Render a React element to a string synchronously. Unlike `render()`, this function does not write to stdout, does not set up any terminal event listeners, and returns the rendered output as a string.
+
+Useful for generating documentation, writing output to files, testing, or any scenario where you need the rendered output as a string without starting a persistent terminal application.
+
+```jsx
+import {renderToString, Text, Box} from 'ink';
+
+const output = renderToString(
+	<Box padding={1}>
+		<Text color="green">Hello World</Text>
+	</Box>,
+);
+
+console.log(output);
+```
+
+**Notes:**
+
+- Terminal-specific hooks (`useInput`, `useStdin`, `useStdout`, `useStderr`, `useWindowSize`, `useApp`, `useFocus`, `useFocusManager`) return default no-op values since there is no terminal session. They will not throw, but they will not function as in a live terminal.
+- `useEffect` callbacks will execute during rendering (due to synchronous rendering mode), but state updates they trigger will not affect the returned output, which reflects the initial render.
+- `useLayoutEffect` callbacks fire synchronously during commit, so state updates they trigger **will** be reflected in the output.
+- The `<Static>` component is supported — its output is prepended to the dynamic output.
+- If a component throws during rendering, the error is propagated to the caller after cleanup.
+
+##### tree
+
+Type: `ReactNode`
+
+##### options
+
+Type: `object`
+
+###### columns
+
+Type: `number`\
+Default: `80`
+
+Width of the virtual terminal in columns. Controls where text wrapping occurs.
+
+```jsx
+const output = renderToString(<Text>{'A'.repeat(100)}</Text>, {
+	columns: 40,
+});
+// Text wraps at 40 columns
+```
+
 #### Instance
 
 This is the object that `render()` returns.
 
 ##### rerender(tree)
 
-Replace the previous root node with a new one or update props of the current root node.
+Replace the previous root node with a new one or update the props of the current root node.
 
 ###### tree
 
-Type: `ReactElement`
+Type: `ReactNode`
 
 ```jsx
 // Update props of the root node
@@ -2103,7 +2829,10 @@ unmount();
 
 ##### waitUntilExit()
 
-Returns a promise that resolves when the app is unmounted.
+Returns a promise that settles when the app is unmounted.
+
+It resolves with the value passed to `exit(value)` and rejects with the error passed to `exit(error)`.
+When `unmount()` is called manually, it settles after unmount-related stdout writes complete.
 
 ```jsx
 const {unmount, waitUntilExit} = render(<MyApp />);
@@ -2112,6 +2841,27 @@ setTimeout(unmount, 1000);
 
 await waitUntilExit(); // resolves after `unmount()` is called
 ```
+
+##### waitUntilRenderFlush()
+
+Returns a promise that settles after pending render output is flushed to stdout.
+
+Useful when you need to run code only after a frame is written:
+
+```jsx
+const {rerender, waitUntilRenderFlush} = render(<MyApp step="loading" />);
+
+rerender(<MyApp step="ready" />);
+await waitUntilRenderFlush(); // output for "ready" is flushed
+
+runNextCommand();
+```
+
+##### cleanup()
+
+Unmount the current app and delete the internal Ink instance associated with the current `stdout`.
+This is mostly useful for advanced cases (for example, tests) where you need `render()` to create a fresh instance for the same stream.
+Unlike deleting the internal instance directly, this also tears down terminal state such as the alternate screen.
 
 ##### clear()
 
@@ -2128,7 +2878,8 @@ Measure the dimensions of a particular `<Box>` element.
 Returns an object with `width` and `height` properties.
 This function is useful when your component needs to know the amount of available space it has. You can use it when you need to change the layout based on the length of its content.
 
-**Note:** `measureElement()` returns correct results only after the initial render, when the layout has been calculated. Until then, `width` and `height` equal zero. It's recommended to call `measureElement()` in a `useEffect` hook, which fires after the component has rendered.
+> [!NOTE]
+> `measureElement()` returns `{width: 0, height: 0}` when called during render (before layout is calculated). Call it from post-render code, such as `useEffect`, `useLayoutEffect`, input handlers, or timer callbacks. When content changes, pass the relevant dependency to your effect so it re-measures after each update.
 
 ##### ref
 
@@ -2163,7 +2914,7 @@ render(<Example />);
 ## Testing
 
 Ink components are simple to test with [ink-testing-library](https://github.com/vadimdemedes/ink-testing-library).
-Here's a simple example that checks how component is rendered:
+Here's a simple example that checks how the component is rendered:
 
 ```jsx
 import React from 'react';
@@ -2197,7 +2948,8 @@ npx react-devtools
 After it starts, you should see the component tree of your CLI.
 You can even inspect and change the props of components, and see the results immediately in the CLI, without restarting it.
 
-**Note**: You must manually quit your CLI via <kbd>Ctrl</kbd>+<kbd>C</kbd> after you're done testing.
+> [!NOTE]
+> You must manually quit your CLI via <kbd>Ctrl</kbd>+<kbd>C</kbd> after you're done testing.
 
 ## Screen Reader Support
 
@@ -2253,38 +3005,49 @@ Default: `false`
 
 Hide the element from screen readers.
 
-##### aria-role
+### `aria-role`
 
 Type: `string`
 
 The role of the element.
 
 Supported values:
+
 - `button`
 - `checkbox`
-- `radio`
-- `radiogroup`
+- `combobox`
 - `list`
+- `listbox`
 - `listitem`
 - `menu`
 - `menuitem`
+- `option`
 - `progressbar`
+- `radio`
+- `radiogroup`
 - `tab`
 - `tablist`
+- `table`
+- `textbox`
 - `timer`
 - `toolbar`
-- `table`
 
-##### aria-state
+### `aria-state`
 
 Type: `object`
 
 The state of the element.
 
 Supported values:
+
+- `busy` (boolean)
 - `checked` (boolean)
 - `disabled` (boolean)
 - `expanded` (boolean)
+- `multiline` (boolean)
+- `multiselectable` (boolean)
+- `readonly` (boolean)
+- `required` (boolean)
 - `selected` (boolean)
 
 ## Creating Components
@@ -2323,10 +3086,19 @@ For a practical example of building an accessible component, see the [ARIA examp
 - [ink-spawn](https://github.com/kraenhansen/ink-spawn) - Spawn child processes.
 - [ink-titled-box](https://github.com/mishieck/ink-titled-box) - Box with a title.
 - [ink-chart](https://github.com/pppp606/ink-chart) - Sparkline and bar chart.
+- [ink-scroll-view](https://github.com/ByteLandTechnology/ink-scroll-view) - Scroll container.
+- [ink-scroll-list](https://github.com/ByteLandTechnology/ink-scroll-list) - Scrollable list.
+- [ink-stepper](https://github.com/archcorsair/ink-stepper) - Step-by-step wizard.
+- [ink-virtual-list](https://github.com/archcorsair/ink-virtual-list) - Virtualized list that renders only visible items for performance.
+- [ink-color-picker](https://github.com/sina-byn/ink-color-picker) - Color picker.
 
 ## Useful Hooks
 
 - [ink-use-stdout-dimensions](https://github.com/cameronhunter/ink-monorepo/tree/master/packages/ink-use-stdout-dimensions) - Subscribe to stdout dimensions.
+
+## Recipes
+
+- [Routing with React Router](recipes/routing.md) - Navigate between routes using `MemoryRouter`.
 
 ## Examples
 
@@ -2349,6 +3121,20 @@ npm run example examples/[example name]
 - [Write to stderr](examples/use-stderr/use-stderr.tsx) - Write to stderr, bypassing main Ink output.
 - [Static](examples/static/static.tsx) - Use the `<Static>` component to render permanent output.
 - [Child process](examples/subprocess-output) - Renders output from a child process.
+- [Router](examples/router/router.tsx) - Navigate between routes using React Router's `MemoryRouter`.
+
+## Continuous Integration
+
+When running on CI (detected via the `CI` environment variable), Ink adapts its rendering:
+
+- Only the last frame is rendered on exit, instead of continuously updating the terminal. This is because most CI environments don't support the ANSI escape sequences used to overwrite previous output.
+- Terminal resize events are not listened to.
+
+If your CI environment supports full terminal rendering and you want to opt out of this behavior, set `CI=false`:
+
+```sh
+CI=false node my-cli.js
+```
 
 ## Maintainers
 

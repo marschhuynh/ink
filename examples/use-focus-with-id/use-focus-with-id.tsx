@@ -41,7 +41,7 @@ function Focus() {
 }
 
 type ItemProperties = {
-	readonly id: number;
+	readonly id: string;
 	readonly label: string;
 };
 
@@ -50,7 +50,7 @@ function Item({label, id}: ItemProperties) {
 
 	return (
 		<Text>
-			{label} {isFocused && <Text color="green">(focused)</Text>}
+			{label} {isFocused ? <Text color="green">(focused)</Text> : null}
 		</Text>
 	);
 }

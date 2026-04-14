@@ -1,19 +1,31 @@
-import EventEmitter from 'node:events';
 import process from 'node:process';
+import vm from 'node:vm';
+import {spawn as spawnProcess} from 'node:child_process';
+import {PassThrough, Writable} from 'node:stream';
 import url from 'node:url';
 import * as path from 'node:path';
 import {createRequire} from 'node:module';
 import FakeTimers from '@sinonjs/fake-timers';
 import {stub} from 'sinon';
-import test from 'ava';
-import React, {type ReactNode, useEffect, useState} from 'react';
+import test, {type ExecutionContext} from 'ava';
+import React, {
+	type ReactElement,
+	type ReactNode,
+	PureComponent,
+	useEffect,
+	useState,
+} from 'react';
 import ansiEscapes from 'ansi-escapes';
 import stripAnsi from 'strip-ansi';
 import boxen from 'boxen';
 import delay from 'delay';
-import {render, Box, Text, useInput} from '../src/index.js';
+import {render, Box, Text, useApp, useCursor, useInput} from '../src/index.js';
 import {type RenderMetrics} from '../src/ink.js';
+import {bsu, esu} from '../src/write-synchronized.js';
+import {createStdin, emitReadable} from './helpers/create-stdin.js';
 import createStdout from './helpers/create-stdout.js';
+
+const textDecoder = new TextDecoder();
 
 const require = createRequire(import.meta.url);
 
@@ -21,28 +33,6 @@ const require = createRequire(import.meta.url);
 const {spawn} = require('node-pty') as typeof import('node-pty');
 
 const __dirname = url.fileURLToPath(new URL('.', import.meta.url));
-
-const createStdin = () => {
-	const stdin = new EventEmitter() as unknown as NodeJS.WriteStream;
-	stdin.isTTY = true;
-	stdin.setRawMode = stub();
-	stdin.setEncoding = () => {};
-	stdin.read = stub();
-	stdin.unref = () => {};
-	stdin.ref = () => {};
-
-	return stdin;
-};
-
-const emitReadable = (stdin: NodeJS.WriteStream, chunk: string) => {
-	/* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment */
-	const read = stdin.read as ReturnType<typeof stub>;
-	read.onCall(0).returns(chunk);
-	read.onCall(1).returns(null);
-	stdin.emit('readable');
-	read.reset();
-	/* eslint-enable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment */
-};
 
 const term = (fixture: string, args: string[] = []) => {
 	let resolve: (value?: unknown) => void;
@@ -63,7 +53,7 @@ const term = (fixture: string, args: string[] = []) => {
 	const ps = spawn(
 		'node',
 		[
-			'--loader=ts-node/esm',
+			'--import=tsx',
 			path.join(__dirname, `./fixtures/${fixture}.tsx`),
 			...args,
 		],
@@ -84,7 +74,11 @@ const term = (fixture: string, args: string[] = []) => {
 	};
 
 	ps.onData(data => {
-		result.output += data;
+		// Strip Synchronized Update Mode sequences (bsu/esu) so tests
+		// only see the actual content, not the transport wrapper.
+		result.output += data
+			.replaceAll('\u001B[?2026h', '')
+			.replaceAll('\u001B[?2026l', '');
 	});
 
 	ps.onExit(({exitCode}) => {
@@ -98,6 +92,244 @@ const term = (fixture: string, args: string[] = []) => {
 
 	return result;
 };
+
+const countOccurrences = (text: string, searchValue: string): number => {
+	if (searchValue === '') {
+		return 0;
+	}
+
+	return text.split(searchValue).length - 1;
+};
+
+const isWriteBarrierChunk = (chunk: string | Uint8Array): boolean =>
+	(typeof chunk === 'string' && chunk === '') ||
+	(chunk instanceof Uint8Array && chunk.length === 0);
+
+const toRenderedChunk = (chunk: string | Uint8Array): string =>
+	stripAnsi(typeof chunk === 'string' ? chunk : textDecoder.decode(chunk));
+
+const isCursorOrSyncEscape = (chunk: string | Uint8Array): boolean => {
+	const str = typeof chunk === 'string' ? chunk : textDecoder.decode(chunk);
+	return str.startsWith('\u001B[?25') || str === bsu || str === esu;
+};
+
+const isRenderContent = (chunk: string | Uint8Array): boolean =>
+	!isWriteBarrierChunk(chunk) && !isCursorOrSyncEscape(chunk);
+
+const getContentWrites = (writeSpy: any): string[] =>
+	(writeSpy.args as string[][])
+		.map((args: string[]) => args[0]!)
+		.filter((w: string) => isRenderContent(w));
+
+const createDelayedWriteCallbackStdout = ({
+	shouldDelay,
+	onDelayElapsed,
+	delayMs = 150,
+}: {
+	readonly shouldDelay: (chunk: string | Uint8Array) => boolean;
+	readonly onDelayElapsed: () => void;
+	readonly delayMs?: number;
+}): NodeJS.WriteStream => {
+	let didDelayOnce = false;
+
+	const stdout = new Writable({
+		write(
+			chunk: string | Uint8Array,
+			_encoding: BufferEncoding,
+			callback: (error?: Error) => void,
+		) {
+			if (!didDelayOnce && shouldDelay(chunk)) {
+				didDelayOnce = true;
+
+				setTimeout(() => {
+					onDelayElapsed();
+					callback();
+				}, delayMs);
+
+				return;
+			}
+
+			callback();
+		},
+	}) as unknown as NodeJS.WriteStream;
+
+	stdout.columns = 100;
+	stdout.isTTY = true;
+	return stdout;
+};
+
+type Issue450Fixture =
+	| 'issue-450-full-height-rerender'
+	| 'issue-450-full-height-rerender-with-marker'
+	| 'issue-450-height-minus-one-rerender'
+	| 'issue-450-full-height-with-static-rerender'
+	| 'issue-450-initial-overflow'
+	| 'issue-450-initial-fullscreen'
+	| 'issue-450-grow-to-fullscreen-rerender'
+	| 'issue-450-shrink-from-fullscreen-rerender'
+	| 'issue-450-shrink-from-overflow-rerender'
+	| 'issue-450-static-shrink-from-fullscreen-rerender';
+
+const runIssue450Fixture = async (
+	fixture: Issue450Fixture,
+	rows = 6,
+): Promise<string> => {
+	const processResult = term(fixture, [String(rows)]);
+	await processResult.waitForExit();
+	return processResult.output;
+};
+
+const runNonTtyFixture = async (
+	fixture: string,
+	args: string[] = [],
+): Promise<string> => {
+	let output = '';
+	let errorOutput = '';
+	const env = {
+		...process.env,
+		// eslint-disable-next-line @typescript-eslint/naming-convention
+		NODE_NO_WARNINGS: '1',
+	};
+	// Force non-CI code path while still using a non-TTY stdout stream.
+	env.CI = 'false';
+
+	const fixtureProcess = spawnProcess(
+		'node',
+		[
+			'--import=tsx',
+			path.join(__dirname, `./fixtures/${fixture}.tsx`),
+			...args,
+		],
+		{
+			cwd: __dirname,
+			env,
+			stdio: ['ignore', 'pipe', 'pipe'],
+		},
+	);
+
+	fixtureProcess.stdout.on('data', (data: Uint8Array | string) => {
+		output += typeof data === 'string' ? data : data.toString();
+	});
+
+	fixtureProcess.stderr.on('data', (data: Uint8Array | string) => {
+		errorOutput += typeof data === 'string' ? data : data.toString();
+	});
+
+	const exitCode = await new Promise<number>((resolve, reject) => {
+		fixtureProcess.on('error', reject);
+		fixtureProcess.on('close', code => {
+			resolve(code ?? 0);
+		});
+	});
+
+	if (exitCode !== 0) {
+		throw new Error(
+			`Non-TTY fixture exited with code ${exitCode}: ${errorOutput}`,
+		);
+	}
+
+	return output;
+};
+
+type Issue450FixtureResult = {
+	output: string;
+	clearTerminalCount: number;
+	eraseLineCount: number;
+};
+
+const getIssue450ControlSequenceCounts = (output: string) => ({
+	clearTerminalCount: countOccurrences(output, ansiEscapes.clearTerminal),
+	eraseLineCount: countOccurrences(output, ansiEscapes.eraseLines(1)),
+});
+
+const runIssue450FixtureWithCounts = async (
+	fixture: Issue450Fixture,
+	rows = 6,
+): Promise<Issue450FixtureResult> => {
+	const output = await runIssue450Fixture(fixture, rows);
+	const {clearTerminalCount, eraseLineCount} =
+		getIssue450ControlSequenceCounts(output);
+
+	return {
+		output,
+		clearTerminalCount,
+		eraseLineCount,
+	};
+};
+
+const getOutputBeforeMarker = (
+	t: ExecutionContext,
+	output: string,
+	marker: string,
+): string => {
+	const markerIndex = output.indexOf(marker);
+	t.true(markerIndex >= 0, `Fixture marker "${marker}" should be present`);
+	return markerIndex >= 0 ? output.slice(0, markerIndex) : output;
+};
+
+const runIssue450FixtureBeforeMarker = async (
+	t: ExecutionContext,
+	fixture: Issue450Fixture,
+	marker: string,
+	rows = 6,
+): Promise<string> => {
+	const output = await runIssue450Fixture(fixture, rows);
+	return getOutputBeforeMarker(t, output, marker);
+};
+
+const assertIssue450DynamicFrameOutput = (
+	t: ExecutionContext,
+	output: string,
+): void => {
+	t.true(
+		output.includes('frame 8'),
+		'Fixture should render multiple dynamic frames',
+	);
+};
+
+class SynchronousErrorBoundary extends PureComponent<
+	{
+		onError: (error: Error) => void;
+		children?: ReactElement;
+	},
+	{error?: Error}
+> {
+	static displayName = 'SynchronousErrorBoundary';
+
+	static override getDerivedStateFromError(error: Error) {
+		return {error};
+	}
+
+	override state: {error?: Error} = {
+		error: undefined,
+	};
+
+	override componentDidCatch(error: Error) {
+		this.props.onError(error);
+	}
+
+	override render() {
+		if (this.state.error) {
+			return null;
+		}
+
+		return this.props.children;
+	}
+}
+
+function SynchronousRenderErrorComponent() {
+	throw new Error('Synchronous render error');
+}
+
+function ThrowingComponentWithBoundary() {
+	const {exit} = useApp();
+
+	return (
+		<SynchronousErrorBoundary onError={exit}>
+			<SynchronousRenderErrorComponent />
+		</SynchronousErrorBoundary>
+	);
+}
 
 test.serial('do not erase screen', async t => {
 	const ps = term('erase', ['4']);
@@ -213,6 +445,344 @@ test.serial(
 	},
 );
 
+test.serial(
+	'#442: full terminal-size box should not add an extra scroll line',
+	async t => {
+		const rows = 5;
+		const ps = term('issue-442-full-height', [String(rows)]);
+		await ps.waitForExit();
+
+		const lastFrame = ps.output.split(ansiEscapes.clearTerminal).at(-1) ?? '';
+		const lastFrameContent = stripAnsi(lastFrame);
+		const lines = lastFrameContent.split('\n');
+
+		t.false(
+			lastFrameContent.endsWith('\n'),
+			'Should not end with a trailing newline in fullscreen mode',
+		);
+		t.is(
+			lines.length,
+			rows,
+			'Should render exactly terminal row count without an extra line',
+		);
+		t.true(lines.at(-1)?.includes('#442 bottom') ?? false);
+	},
+);
+
+test.serial(
+	'#450: full-height rerenders should not repeatedly clear terminal',
+	async t => {
+		const {output, clearTerminalCount, eraseLineCount} =
+			await runIssue450FixtureWithCounts('issue-450-full-height-rerender');
+
+		assertIssue450DynamicFrameOutput(t, output);
+		t.true(
+			clearTerminalCount <= 1,
+			`Expected at most one clearTerminal sequence, received ${clearTerminalCount}`,
+		);
+		t.true(
+			eraseLineCount > 0,
+			'Expected incremental erase sequences for fullscreen rerenders',
+		);
+	},
+);
+
+test.serial(
+	'#450: initial overflowing frame should not clear terminal',
+	async t => {
+		const renderedMarker = '__INITIAL_OVERFLOW_FRAME_RENDERED__';
+		const outputBeforeMarker = await runIssue450FixtureBeforeMarker(
+			t,
+			'issue-450-initial-overflow',
+			renderedMarker,
+			3,
+		);
+
+		t.false(
+			outputBeforeMarker.includes(ansiEscapes.clearTerminal),
+			'Initial overflowing render should not clear terminal',
+		);
+	},
+);
+
+test.serial(
+	'#450: initial full-height frame should not clear terminal',
+	async t => {
+		const renderedMarker = '__INITIAL_FULLSCREEN_FRAME_RENDERED__';
+		const outputBeforeMarker = await runIssue450FixtureBeforeMarker(
+			t,
+			'issue-450-initial-fullscreen',
+			renderedMarker,
+			3,
+		);
+
+		t.false(
+			outputBeforeMarker.includes(ansiEscapes.clearTerminal),
+			'Initial full-height render should not clear terminal',
+		);
+	},
+);
+
+test.serial(
+	'#450 control: rows - 1 rerenders should avoid clearTerminal',
+	async t => {
+		const {output, clearTerminalCount, eraseLineCount} =
+			await runIssue450FixtureWithCounts('issue-450-height-minus-one-rerender');
+
+		assertIssue450DynamicFrameOutput(t, output);
+		t.is(clearTerminalCount, 0);
+		t.true(
+			eraseLineCount > 0,
+			'Expected incremental erase sequences for non-fullscreen rerenders',
+		);
+	},
+);
+
+test.serial(
+	'#450: full-height rerenders should not clear before unmount',
+	async t => {
+		const renderedMarker = '__FULL_HEIGHT_RERENDER_COMPLETED__';
+		const outputBeforeMarker = await runIssue450FixtureBeforeMarker(
+			t,
+			'issue-450-full-height-rerender-with-marker',
+			renderedMarker,
+		);
+		const {clearTerminalCount} =
+			getIssue450ControlSequenceCounts(outputBeforeMarker);
+
+		assertIssue450DynamicFrameOutput(t, outputBeforeMarker);
+		t.is(clearTerminalCount, 0);
+	},
+);
+
+test.serial(
+	'#450: grow from rows - 1 to full-height should not clear before unmount',
+	async t => {
+		const renderedMarker = '__GROW_TO_FULLSCREEN_RERENDER_COMPLETED__';
+		const outputBeforeMarker = await runIssue450FixtureBeforeMarker(
+			t,
+			'issue-450-grow-to-fullscreen-rerender',
+			renderedMarker,
+		);
+		const {clearTerminalCount} =
+			getIssue450ControlSequenceCounts(outputBeforeMarker);
+
+		assertIssue450DynamicFrameOutput(t, outputBeforeMarker);
+		t.is(clearTerminalCount, 0);
+	},
+);
+
+test.serial(
+	'#450: shrink from full-height to rows - 1 should clear exactly once',
+	async t => {
+		const {output, clearTerminalCount} = await runIssue450FixtureWithCounts(
+			'issue-450-shrink-from-fullscreen-rerender',
+		);
+
+		assertIssue450DynamicFrameOutput(t, output);
+		t.is(clearTerminalCount, 1);
+	},
+);
+
+test.serial(
+	'#450: shrink from overflow to rows - 1 should clear exactly once',
+	async t => {
+		const {output, clearTerminalCount} = await runIssue450FixtureWithCounts(
+			'issue-450-shrink-from-overflow-rerender',
+		);
+
+		assertIssue450DynamicFrameOutput(t, output);
+		t.is(clearTerminalCount, 1);
+	},
+);
+
+test.serial(
+	'#450: <Static> with shrink from full-height should clear exactly once',
+	async t => {
+		const {output, clearTerminalCount} = await runIssue450FixtureWithCounts(
+			'issue-450-static-shrink-from-fullscreen-rerender',
+		);
+
+		t.true(output.includes('#450 static line'));
+		assertIssue450DynamicFrameOutput(t, output);
+		t.is(clearTerminalCount, 1);
+	},
+);
+
+test.serial(
+	'#450: non-TTY full-height rerenders should never clear terminal',
+	t => {
+		const rows = 6;
+		const stdout = createStdout();
+		stdout.rows = rows;
+		const writes = captureWrites(stdout);
+
+		function NonTtyRerenderTestComponent({
+			frameCount,
+		}: {
+			readonly frameCount: number;
+		}) {
+			return (
+				<Box height={rows} flexDirection="column">
+					<Text>#450 top</Text>
+					<Box flexGrow={1}>
+						<Text>{`frame ${frameCount}`}</Text>
+					</Box>
+					<Text>#450 bottom</Text>
+				</Box>
+			);
+		}
+
+		const {rerender, unmount} = render(
+			<NonTtyRerenderTestComponent frameCount={0} />,
+			{stdout},
+		);
+
+		rerender(<NonTtyRerenderTestComponent frameCount={1} />);
+		rerender(<NonTtyRerenderTestComponent frameCount={2} />);
+
+		const {clearTerminalCount} = getIssue450ControlSequenceCounts(
+			writes.join(''),
+		);
+		t.is(clearTerminalCount, 0);
+
+		unmount();
+	},
+);
+
+test.serial(
+	'#450: non-TTY overflow transitions should never clear terminal',
+	t => {
+		const rows = 3;
+		const stdout = createStdout();
+		stdout.rows = rows;
+		const writes = captureWrites(stdout);
+
+		function NonTtyOverflowTransitionTestComponent({
+			lineCount,
+		}: {
+			readonly lineCount: number;
+		}) {
+			const lines = [];
+			for (let lineNumber = 1; lineNumber <= lineCount; lineNumber++) {
+				lines.push(<Text key={lineNumber}>{`line ${lineNumber}`}</Text>);
+			}
+
+			return <Box flexDirection="column">{lines}</Box>;
+		}
+
+		const {rerender, unmount} = render(
+			<NonTtyOverflowTransitionTestComponent lineCount={2} />,
+			{stdout},
+		);
+
+		rerender(<NonTtyOverflowTransitionTestComponent lineCount={4} />);
+
+		const {clearTerminalCount} = getIssue450ControlSequenceCounts(
+			writes.join(''),
+		);
+		t.is(clearTerminalCount, 0);
+
+		unmount();
+	},
+);
+
+test.serial(
+	'#450: viewport shrink into overflow should clear once',
+	async t => {
+		const rows = 6;
+		const stdout = createTtyStdout();
+		stdout.rows = rows;
+		const writes = captureWrites(stdout);
+
+		function ResizeBoundaryTestComponent() {
+			return (
+				<Box height={rows} flexDirection="column">
+					<Text>#450 top</Text>
+					<Box flexGrow={1}>
+						<Text>#450 middle</Text>
+					</Box>
+					<Text>#450 bottom</Text>
+				</Box>
+			);
+		}
+
+		const {unmount} = render(<ResizeBoundaryTestComponent />, {stdout});
+
+		writes.length = 0;
+		stdout.rows = rows - 1;
+		stdout.emit('resize');
+		await delay(0);
+
+		const {clearTerminalCount} = getIssue450ControlSequenceCounts(
+			writes.join(''),
+		);
+		t.is(clearTerminalCount, 1);
+
+		unmount();
+	},
+);
+
+test.serial(
+	'#450: non-TTY grow-to-overflow rerender should not clear terminal',
+	async t => {
+		const output = await runNonTtyFixture(
+			'issue-450-grow-to-overflow-rerender',
+			['3'],
+		);
+		t.false(output.includes(ansiEscapes.clearTerminal));
+	},
+);
+
+test.serial('#725: non-TTY child process output is flushed', async t => {
+	const output = await runNonTtyFixture('issue-725-child-process');
+	const plainOutput = stripAnsi(output);
+
+	t.true(plainOutput.includes('ready-stdin-not-tty'));
+	t.true(plainOutput.includes('exited'));
+});
+
+test.serial('useAnimation can drive non-interactive process exit', async t => {
+	const output = await runNonTtyFixture('use-animation-non-interactive-exit');
+
+	t.true(stripAnsi(output).includes('exited'));
+});
+
+test.serial(
+	'useAnimation can drive explicitly non-interactive process exit',
+	async t => {
+		const output = await runNonTtyFixture(
+			'use-animation-interactive-false-exit',
+		);
+
+		t.true(stripAnsi(output).includes('exited'));
+	},
+);
+
+test.serial(
+	'#450: full-height rerenders with <Static> should not repeatedly clear terminal',
+	async t => {
+		const {output, clearTerminalCount, eraseLineCount} =
+			await runIssue450FixtureWithCounts(
+				'issue-450-full-height-with-static-rerender',
+			);
+
+		t.true(
+			output.includes('#450 static line'),
+			'Fixture should emit static output',
+		);
+		assertIssue450DynamicFrameOutput(t, output);
+		t.true(
+			clearTerminalCount <= 1,
+			`Expected at most one clearTerminal sequence, received ${clearTerminalCount}`,
+		);
+		t.true(
+			eraseLineCount > 0,
+			'Expected incremental erase sequences for fullscreen rerenders',
+		);
+	},
+);
+
 test.serial('clear output', async t => {
 	const ps = term('clear');
 	await ps.waitForExit();
@@ -254,8 +824,9 @@ test.serial('rerender on resize', async t => {
 
 	const {unmount} = render(<Test />, {stdout});
 
+	const contentWrites = getContentWrites(stdout.write);
 	t.is(
-		stripAnsi((stdout.write as any).firstCall.args[0] as string),
+		stripAnsi(contentWrites[0]!),
 		boxen('Test'.padEnd(8), {borderStyle: 'round'}) + '\n',
 	);
 
@@ -265,8 +836,9 @@ test.serial('rerender on resize', async t => {
 	stdout.emit('resize');
 	await delay(100);
 
+	const contentWritesAfterResize = getContentWrites(stdout.write);
 	t.is(
-		stripAnsi((stdout.write as any).lastCall.args[0] as string),
+		stripAnsi(contentWritesAfterResize.at(-1)!),
 		boxen('Test'.padEnd(6), {borderStyle: 'round'}) + '\n',
 	);
 
@@ -278,8 +850,13 @@ function ThrottleTestComponent({text}: {readonly text: string}) {
 	return <Text>{text}</Text>;
 }
 
+function ThrottleCursorTestComponent({text}: {readonly text: string}) {
+	const {setCursorPosition} = useCursor();
+	setCursorPosition({x: 0, y: 0});
+	return <Text>{text}</Text>;
+}
+
 test.serial('throttle renders to maxFps', t => {
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
 	const clock = FakeTimers.install(); // Controls timers + Date.now()
 	try {
 		const stdout = createStdout();
@@ -290,37 +867,24 @@ test.serial('throttle renders to maxFps', t => {
 		});
 
 		// Initial render (leading call)
-
-		t.is((stdout.write as any).callCount, 1);
-		t.is(
-			stripAnsi((stdout.write as any).lastCall.args[0] as string),
-			'Hello\n',
-		);
+		t.is(getContentWrites(stdout.write).length, 1);
+		t.is(stripAnsi(getContentWrites(stdout.write)[0]!), 'Hello\n');
 
 		// Trigger another render inside the throttle window
 		rerender(<ThrottleTestComponent text="World" />);
-
-		t.is((stdout.write as any).callCount, 1);
+		t.is(getContentWrites(stdout.write).length, 1);
 
 		// Advance 999 ms: still within window, no trailing call yet
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.tick(999);
-
-		t.is((stdout.write as any).callCount, 1);
+		t.is(getContentWrites(stdout.write).length, 1);
 
 		// Cross the boundary: trailing render fires once
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.tick(1);
-
-		t.is((stdout.write as any).callCount, 2);
-		t.is(
-			stripAnsi((stdout.write as any).lastCall.args[0] as string),
-			'World\n',
-		);
+		t.is(getContentWrites(stdout.write).length, 2);
+		t.is(stripAnsi(getContentWrites(stdout.write)[1]!), 'World\n');
 
 		unmount();
 	} finally {
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.uninstall();
 	}
 });
@@ -386,7 +950,6 @@ test.serial('outputs renderTime when onRender is passed', async t => {
 });
 
 test.serial('no throttled renders after unmount', t => {
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
 	const clock = FakeTimers.install();
 	try {
 		const stdout = createStdout();
@@ -395,22 +958,1066 @@ test.serial('no throttled renders after unmount', t => {
 			stdout,
 		});
 
-		t.is((stdout.write as any).callCount, 1);
+		t.is(getContentWrites(stdout.write).length, 1);
 
 		rerender(<ThrottleTestComponent text="Bar" />);
 		rerender(<ThrottleTestComponent text="Baz" />);
 		unmount();
 
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-		const callCountAfterUnmount = (stdout.write as any).callCount;
+		const contentCountAfterUnmount = getContentWrites(stdout.write).length;
 
 		// Regression test for https://github.com/vadimdemedes/ink/issues/692
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.tick(1000);
-
-		t.is((stdout.write as any).callCount, callCountAfterUnmount);
+		t.is(getContentWrites(stdout.write).length, contentCountAfterUnmount);
 	} finally {
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 		clock.uninstall();
 	}
+});
+
+test.serial('unmount forces pending throttled render', t => {
+	const clock = FakeTimers.install();
+	try {
+		const stdout = createStdout();
+
+		const {unmount, rerender} = render(<ThrottleTestComponent text="Hello" />, {
+			stdout,
+			maxFps: 1, // 1 Hz => ~1000 ms throttle window
+		});
+
+		// Initial render (leading call)
+		t.is(getContentWrites(stdout.write).length, 1);
+		t.is(stripAnsi(getContentWrites(stdout.write)[0]!), 'Hello\n');
+
+		// Trigger another render inside the throttle window
+		rerender(<ThrottleTestComponent text="Final" />);
+		// Not rendered yet due to throttling
+		t.is(getContentWrites(stdout.write).length, 1);
+
+		// Unmount should flush the pending render so the final frame is visible
+		unmount();
+
+		// The final frame should have been rendered
+		const allContentWrites = getContentWrites(stdout.write).map((w: string) =>
+			stripAnsi(w),
+		);
+		t.true(allContentWrites.some((call: string) => call.includes('Final')));
+	} finally {
+		clock.uninstall();
+	}
+});
+
+test.serial(
+	'should reject waitUntilExit when app exits during synchronous render error handling',
+	async t => {
+		const stdout = createStdout();
+		const {waitUntilExit} = render(<ThrowingComponentWithBoundary />, {
+			stdout,
+			patchConsole: false,
+		});
+
+		await t.throwsAsync(
+			Promise.race([
+				waitUntilExit(),
+				delay(500).then(() => {
+					throw new Error('waitUntilExit did not settle');
+				}),
+			]),
+			{
+				message: 'Synchronous render error',
+			},
+		);
+	},
+);
+
+test.serial('waitUntilExit resolves after stdout write callback', async t => {
+	let writeCallbackFired = false;
+
+	const stdout = new Writable({
+		write(_chunk, _encoding, callback) {
+			setTimeout(() => {
+				writeCallbackFired = true;
+				callback();
+			}, 150);
+		},
+	}) as unknown as NodeJS.WriteStream;
+
+	stdout.columns = 100;
+
+	const {unmount, waitUntilExit} = render(<Text>Hello</Text>, {stdout});
+	const exitPromise = waitUntilExit();
+
+	unmount();
+	await exitPromise;
+
+	t.true(writeCallbackFired);
+});
+
+test.serial(
+	'createDelayedWriteCallbackStdout delays only the first matching chunk',
+	async t => {
+		let delayCount = 0;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return !isWriteBarrierChunk(chunk);
+			},
+			onDelayElapsed() {
+				delayCount++;
+			},
+			delayMs: 80,
+		});
+
+		const writeChunk = async (chunk: string | Uint8Array): Promise<void> =>
+			new Promise<void>(resolve => {
+				stdout.write(chunk, () => {
+					resolve();
+				});
+			});
+
+		await writeChunk('');
+		t.is(delayCount, 0);
+
+		let didDelayedWriteResolve = false;
+		const delayedWritePromise = (async () => {
+			await writeChunk('Hello');
+			didDelayedWriteResolve = true;
+		})();
+
+		await delay(20);
+		t.false(didDelayedWriteResolve);
+		await delayedWritePromise;
+		t.is(delayCount, 1);
+
+		let didImmediateWriteResolve = false;
+		const immediateWritePromise = (async () => {
+			await writeChunk('World');
+			didImmediateWriteResolve = true;
+		})();
+
+		await delay(0);
+		t.true(didImmediateWriteResolve);
+		await immediateWritePromise;
+		t.is(delayCount, 1);
+	},
+);
+
+test.serial(
+	'waitUntilRenderFlush resolves after stdout write callback',
+	async t => {
+		let didInitialWriteCallbackFire = false;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return !isWriteBarrierChunk(chunk);
+			},
+			onDelayElapsed() {
+				didInitialWriteCallbackFire = true;
+			},
+		});
+
+		const {unmount, waitUntilExit, waitUntilRenderFlush} = render(
+			<Text>Hello</Text>,
+			{
+				stdout,
+			},
+		);
+
+		t.teardown(async () => {
+			unmount();
+			await waitUntilExit();
+		});
+
+		await waitUntilRenderFlush();
+
+		t.true(didInitialWriteCallbackFire);
+	},
+);
+
+test.serial(
+	'waitUntilRenderFlush flushes pending throttled render',
+	async t => {
+		const stdout = createStdout();
+		const {unmount, rerender, waitUntilExit, waitUntilRenderFlush} = render(
+			<ThrottleTestComponent text="Hello" />,
+			{
+				stdout,
+				maxFps: 1,
+			},
+		);
+
+		t.teardown(async () => {
+			unmount();
+			await waitUntilExit();
+		});
+
+		t.is(getContentWrites(stdout.write).length, 1);
+
+		rerender(<ThrottleTestComponent text="World" />);
+		t.is(getContentWrites(stdout.write).length, 1);
+
+		await waitUntilRenderFlush();
+
+		t.is(getContentWrites(stdout.write).length, 2);
+		t.is(stripAnsi(getContentWrites(stdout.write)[1]!), 'World\n');
+	},
+);
+
+test.serial(
+	'waitUntilRenderFlush resolves when stdout is not writable',
+	async t => {
+		const stdout = createStdout();
+		const {unmount, rerender, waitUntilExit, waitUntilRenderFlush} = render(
+			<ThrottleTestComponent text="Hello" />,
+			{
+				stdout,
+				maxFps: 1,
+			},
+		);
+
+		t.teardown(async () => {
+			unmount();
+			await waitUntilExit();
+		});
+
+		t.is(getContentWrites(stdout.write).length, 1);
+
+		rerender(<ThrottleTestComponent text="World" />);
+		t.is(getContentWrites(stdout.write).length, 1);
+
+		(stdout as NodeJS.WriteStream & {writable?: boolean}).writable = false;
+		await waitUntilRenderFlush();
+
+		t.is(getContentWrites(stdout.write).length, 1);
+	},
+);
+
+test.serial(
+	'waitUntilRenderFlush waits for rerender write callback',
+	async t => {
+		let didSecondWriteCallbackFire = false;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return (
+					!isWriteBarrierChunk(chunk) &&
+					toRenderedChunk(chunk).includes('World')
+				);
+			},
+			onDelayElapsed() {
+				didSecondWriteCallbackFire = true;
+			},
+		});
+
+		const {unmount, rerender, waitUntilExit, waitUntilRenderFlush} = render(
+			<Text>Hello</Text>,
+			{stdout},
+		);
+
+		t.teardown(async () => {
+			unmount();
+			await waitUntilExit();
+		});
+
+		await waitUntilRenderFlush();
+		rerender(<Text>World</Text>);
+		await waitUntilRenderFlush();
+
+		t.true(didSecondWriteCallbackFire);
+	},
+);
+
+test.serial(
+	'waitUntilRenderFlush waits for concurrent rerender commit',
+	async t => {
+		let renderedOutput = '';
+
+		const stdout = new Writable({
+			write(
+				chunk: string | Uint8Array,
+				_encoding: BufferEncoding,
+				callback: (error?: Error) => void,
+			) {
+				renderedOutput += toRenderedChunk(chunk);
+				callback();
+			},
+		}) as unknown as NodeJS.WriteStream;
+
+		stdout.columns = 100;
+		stdout.isTTY = true;
+
+		const {unmount, rerender, waitUntilExit, waitUntilRenderFlush} = render(
+			<Text>Hello</Text>,
+			{
+				stdout,
+				concurrent: true,
+			},
+		);
+
+		t.teardown(async () => {
+			unmount();
+			await waitUntilExit();
+		});
+
+		await waitUntilRenderFlush();
+		rerender(<Text>World</Text>);
+		await waitUntilRenderFlush();
+
+		t.true(renderedOutput.includes('World'));
+	},
+);
+
+test.serial(
+	'waitUntilRenderFlush waits for all concurrent waiters on the same rerender',
+	async t => {
+		let didWorldWriteCallbackFire = false;
+		let didAnyWaiterResolveBeforeWorldWriteCallback = false;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return (
+					!isWriteBarrierChunk(chunk) &&
+					toRenderedChunk(chunk).includes('World')
+				);
+			},
+			onDelayElapsed() {
+				didWorldWriteCallbackFire = true;
+			},
+		});
+
+		const {unmount, rerender, waitUntilExit, waitUntilRenderFlush} = render(
+			<Text>Hello</Text>,
+			{stdout},
+		);
+
+		t.teardown(async () => {
+			unmount();
+			await waitUntilExit();
+		});
+
+		await waitUntilRenderFlush();
+		rerender(<Text>World</Text>);
+
+		const waitForFlush = async () => {
+			await waitUntilRenderFlush();
+
+			if (!didWorldWriteCallbackFire) {
+				didAnyWaiterResolveBeforeWorldWriteCallback = true;
+			}
+		};
+
+		await Promise.all([waitForFlush(), waitForFlush()]);
+
+		t.true(didWorldWriteCallbackFire);
+		t.false(didAnyWaiterResolveBeforeWorldWriteCallback);
+	},
+);
+
+test.serial(
+	'useApp waitUntilRenderFlush resolves after the first frame write callback',
+	async t => {
+		let didInitialWriteCallbackFire = false;
+		let didWaitUntilRenderFlushResolve = false;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return !isWriteBarrierChunk(chunk);
+			},
+			onDelayElapsed() {
+				didInitialWriteCallbackFire = true;
+			},
+		});
+
+		function Test() {
+			const {exit, waitUntilRenderFlush} = useApp();
+
+			useEffect(() => {
+				void (async () => {
+					await waitUntilRenderFlush();
+					didWaitUntilRenderFlushResolve = true;
+					exit();
+				})();
+			}, [exit, waitUntilRenderFlush]);
+
+			return <Text>Hello</Text>;
+		}
+
+		const {waitUntilExit} = render(<Test />, {stdout});
+		await waitUntilExit();
+
+		t.true(didInitialWriteCallbackFire);
+		t.true(didWaitUntilRenderFlushResolve);
+	},
+);
+
+test.serial(
+	'useApp waitUntilRenderFlush waits for state update frame flush',
+	async t => {
+		let didWorldWriteCallbackFire = false;
+		let didWaitUntilRenderFlushResolve = false;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return (
+					!isWriteBarrierChunk(chunk) &&
+					toRenderedChunk(chunk).includes('World')
+				);
+			},
+			onDelayElapsed() {
+				didWorldWriteCallbackFire = true;
+			},
+		});
+
+		function Test() {
+			const {exit, waitUntilRenderFlush} = useApp();
+			const [text, setText] = useState('Hello');
+
+			useEffect(() => {
+				setText('World');
+			}, []);
+
+			useEffect(() => {
+				if (text !== 'World') {
+					return;
+				}
+
+				void (async () => {
+					await waitUntilRenderFlush();
+					didWaitUntilRenderFlushResolve = true;
+					exit();
+				})();
+			}, [exit, text, waitUntilRenderFlush]);
+
+			return <Text>{text}</Text>;
+		}
+
+		const {waitUntilExit} = render(<Test />, {stdout});
+		await waitUntilExit();
+
+		t.true(didWorldWriteCallbackFire);
+		t.true(didWaitUntilRenderFlushResolve);
+	},
+);
+
+test.serial(
+	'useApp waitUntilRenderFlush waits for state update queued in same effect tick',
+	async t => {
+		let didWorldWriteCallbackFire = false;
+		let didWaitUntilRenderFlushResolveBeforeWorldWrite = false;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return (
+					!isWriteBarrierChunk(chunk) &&
+					toRenderedChunk(chunk).includes('World')
+				);
+			},
+			onDelayElapsed() {
+				didWorldWriteCallbackFire = true;
+			},
+		});
+
+		function Test() {
+			const {exit, waitUntilRenderFlush} = useApp();
+			const [text, setText] = useState('Hello');
+
+			useEffect(() => {
+				void (async () => {
+					setText('World');
+					await waitUntilRenderFlush();
+
+					if (!didWorldWriteCallbackFire) {
+						didWaitUntilRenderFlushResolveBeforeWorldWrite = true;
+					}
+
+					exit();
+				})();
+			}, [exit, waitUntilRenderFlush]);
+
+			return <Text>{text}</Text>;
+		}
+
+		const {waitUntilExit} = render(<Test />, {
+			stdout,
+			concurrent: true,
+		});
+		await waitUntilExit();
+
+		t.true(didWorldWriteCallbackFire);
+		t.false(didWaitUntilRenderFlushResolveBeforeWorldWrite);
+	},
+);
+
+test.serial('waitUntilRenderFlush resolves after unmount', async t => {
+	const stdout = createStdout();
+	const {unmount, waitUntilExit, waitUntilRenderFlush} = render(
+		<Text>Hello</Text>,
+		{
+			stdout,
+		},
+	);
+
+	unmount();
+	await waitUntilExit();
+	await waitUntilRenderFlush();
+	t.pass();
+});
+
+test.serial(
+	'waitUntilRenderFlush waits for unmount write callback',
+	async t => {
+		let didUnmountWriteCallbackFire = false;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return isWriteBarrierChunk(chunk);
+			},
+			onDelayElapsed() {
+				didUnmountWriteCallbackFire = true;
+			},
+		});
+
+		const {unmount, waitUntilRenderFlush} = render(<Text>Hello</Text>, {
+			stdout,
+		});
+
+		unmount();
+		await waitUntilRenderFlush();
+
+		t.true(didUnmountWriteCallbackFire);
+	},
+);
+
+test.serial(
+	'waitUntilRenderFlush after unmount does not register beforeExit listener',
+	async t => {
+		const stdout = createStdout();
+		const {unmount, waitUntilRenderFlush} = render(<Text>Hello</Text>, {
+			stdout,
+		});
+		const beforeWaitListenerCount = process.listenerCount('beforeExit');
+
+		unmount();
+		await waitUntilRenderFlush();
+
+		t.is(process.listenerCount('beforeExit'), beforeWaitListenerCount);
+	},
+);
+
+test.serial('waitUntilRenderFlush resolves after exit with error', async t => {
+	const stdout = createStdout();
+
+	function Test() {
+		const {exit} = useApp();
+
+		useEffect(() => {
+			exit(new Error('boom'));
+		}, [exit]);
+
+		return <Text>Hello</Text>;
+	}
+
+	const {waitUntilExit, waitUntilRenderFlush} = render(<Test />, {stdout});
+
+	// Verify exit rejects with the error.
+	await t.throwsAsync(waitUntilExit(), {message: 'boom'});
+
+	// Flush must resolve (not reject) even after an error exit.
+	await waitUntilRenderFlush();
+});
+
+test.serial(
+	'issue 596: useEffect can run before the first frame write callback',
+	async t => {
+		let didInitialWriteCallbackFire = false;
+		let didUseEffectRun = false;
+
+		const stdout = createDelayedWriteCallbackStdout({
+			shouldDelay(chunk) {
+				return !isWriteBarrierChunk(chunk);
+			},
+			onDelayElapsed() {
+				didInitialWriteCallbackFire = true;
+			},
+		});
+
+		function Test() {
+			useEffect(() => {
+				didUseEffectRun = true;
+			}, []);
+
+			return <Text>Hello</Text>;
+		}
+
+		const {unmount, waitUntilExit} = render(<Test />, {stdout});
+
+		await delay(20);
+		t.true(didUseEffectRun);
+		t.false(didInitialWriteCallbackFire);
+
+		unmount();
+		await waitUntilExit();
+
+		t.true(didInitialWriteCallbackFire);
+	},
+);
+
+test.serial(
+	'waitUntilExit resolves first exit value when duplicate exits happen during teardown',
+	async t => {
+		let barrierWriteCallback: (() => void) | undefined;
+
+		const stdout = new Writable({
+			write(
+				chunk: string | Uint8Array,
+				_encoding: BufferEncoding,
+				callback: (error?: Error) => void,
+			) {
+				if (isWriteBarrierChunk(chunk)) {
+					barrierWriteCallback = callback;
+					return;
+				}
+
+				callback();
+			},
+		}) as unknown as NodeJS.WriteStream;
+
+		stdout.columns = 100;
+
+		function Test() {
+			const {exit} = useApp();
+
+			useEffect(() => {
+				exit('first');
+				setTimeout(() => {
+					exit('second');
+				}, 0);
+			}, [exit]);
+
+			return <Text>Hello</Text>;
+		}
+
+		const {waitUntilExit} = render(<Test />, {stdout});
+		const exitPromise = waitUntilExit();
+
+		await delay(0);
+
+		if (!barrierWriteCallback) {
+			t.fail('Expected unmount to queue a write barrier callback');
+			return;
+		}
+
+		barrierWriteCallback();
+		const result = await exitPromise;
+		t.is(result, 'first');
+	},
+);
+
+test.serial(
+	'waitUntilExit resolves first exit value when exit is re-entered during unmount writes',
+	async t => {
+		let exit: ((errorOrResult?: unknown) => void) | undefined;
+		let shouldReenterExit = false;
+		let didReenterExit = false;
+
+		const stdout = new Writable({
+			write(_chunk, _encoding, callback) {
+				if (shouldReenterExit && !didReenterExit && exit) {
+					didReenterExit = true;
+					exit('second');
+				}
+
+				callback();
+			},
+		}) as unknown as NodeJS.WriteStream;
+
+		stdout.columns = 100;
+		stdout.isTTY = true;
+
+		function Test() {
+			const {exit: appExit} = useApp();
+
+			useEffect(() => {
+				exit = appExit;
+				shouldReenterExit = true;
+				appExit('first');
+			}, [appExit]);
+
+			return <Text>Hello</Text>;
+		}
+
+		const {waitUntilExit} = render(<Test />, {stdout});
+		const result = await waitUntilExit();
+
+		t.true(didReenterExit);
+		t.is(result, 'first');
+	},
+);
+
+test.serial(
+	'waitUntilExit resolves first exit value when exit is re-entered during unmount writes in debug mode',
+	async t => {
+		let exit: ((errorOrResult?: unknown) => void) | undefined;
+		let shouldReenterExit = false;
+		let didReenterExit = false;
+
+		const stdout = new Writable({
+			write(_chunk, _encoding, callback) {
+				if (shouldReenterExit && !didReenterExit && exit) {
+					didReenterExit = true;
+					exit('second');
+				}
+
+				callback();
+			},
+		}) as unknown as NodeJS.WriteStream;
+
+		stdout.columns = 100;
+		stdout.isTTY = true;
+
+		function Test() {
+			const {exit: appExit} = useApp();
+
+			useEffect(() => {
+				exit = appExit;
+				shouldReenterExit = true;
+				appExit('first');
+			}, [appExit]);
+
+			return <Text>Hello</Text>;
+		}
+
+		const {waitUntilExit} = render(<Test />, {stdout, debug: true});
+		const result = await waitUntilExit();
+
+		t.true(didReenterExit);
+		t.is(result, 'first');
+	},
+);
+
+test.serial(
+	'waitUntilExit resolves first exit value when exit is re-entered during unmount writes with screen reader',
+	async t => {
+		let exit: ((errorOrResult?: unknown) => void) | undefined;
+		let shouldReenterExit = false;
+		let didReenterExit = false;
+
+		const stdout = new Writable({
+			write(_chunk, _encoding, callback) {
+				if (shouldReenterExit && !didReenterExit && exit) {
+					didReenterExit = true;
+					exit('second');
+				}
+
+				callback();
+			},
+		}) as unknown as NodeJS.WriteStream;
+
+		stdout.columns = 100;
+		stdout.isTTY = true;
+
+		function Test() {
+			const {exit: appExit} = useApp();
+
+			useEffect(() => {
+				exit = appExit;
+				shouldReenterExit = true;
+				appExit('first');
+			}, [appExit]);
+
+			return <Text>Hello</Text>;
+		}
+
+		const {waitUntilExit} = render(<Test />, {
+			stdout,
+			isScreenReaderEnabled: true,
+			patchConsole: false,
+		});
+		const result = await waitUntilExit();
+
+		t.true(didReenterExit);
+		t.is(result, 'first');
+	},
+);
+
+test.serial('exit rejects on cross-realm Error', async t => {
+	const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+	stdout.columns = 100;
+
+	const foreignError = vm.runInNewContext(`new Error('boom')`) as Error;
+
+	function Test() {
+		const {exit} = useApp();
+
+		useEffect(() => {
+			setTimeout(() => {
+				exit(foreignError);
+			}, 0);
+		}, [exit]);
+
+		return <Text>Hello</Text>;
+	}
+
+	const {waitUntilExit} = render(<Test />, {stdout, patchConsole: false});
+
+	await t.throwsAsync(waitUntilExit(), {
+		message: 'boom',
+	});
+});
+
+test.serial(
+	'exit with cross-realm Error rejects after stdout write callback',
+	async t => {
+		let writeCallbackFired = false;
+		let barrierWriteCallbackFired = false;
+
+		const stdout = new Writable({
+			write(chunk: string | Uint8Array, _encoding, callback) {
+				setTimeout(() => {
+					writeCallbackFired = true;
+
+					if (isWriteBarrierChunk(chunk)) {
+						barrierWriteCallbackFired = true;
+					}
+
+					callback();
+				}, 150);
+			},
+		}) as unknown as NodeJS.WriteStream;
+
+		stdout.columns = 100;
+
+		const foreignError = vm.runInNewContext(`new Error('boom')`) as Error;
+
+		function Test() {
+			const {exit} = useApp();
+
+			useEffect(() => {
+				setTimeout(() => {
+					exit(foreignError);
+				}, 0);
+			}, [exit]);
+
+			return <Text>Hello</Text>;
+		}
+
+		const {waitUntilExit} = render(<Test />, {stdout, patchConsole: false});
+
+		await t.throwsAsync(waitUntilExit(), {
+			message: 'boom',
+		});
+
+		t.true(writeCallbackFired);
+		t.true(barrierWriteCallbackFired);
+	},
+);
+
+test.serial('unmount does not write to ended stdout stream', async t => {
+	const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+	stdout.columns = 100;
+
+	const writeErrors: Error[] = [];
+	stdout.on('error', error => {
+		writeErrors.push(error);
+	});
+
+	const {unmount, waitUntilExit} = render(<Text>Hello</Text>, {stdout});
+	const exitPromise = waitUntilExit();
+
+	stdout.end();
+	unmount();
+	await exitPromise;
+	await delay(0);
+
+	t.false(
+		writeErrors.some(
+			error =>
+				(error as NodeJS.ErrnoException).code === 'ERR_STREAM_WRITE_AFTER_END',
+		),
+	);
+});
+
+test.serial(
+	'unmount cancels pending throttled log writes when stdout is ended',
+	t => {
+		const clock = FakeTimers.install();
+		try {
+			const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+			stdout.columns = 100;
+
+			const writeErrors: Error[] = [];
+			stdout.on('error', error => {
+				writeErrors.push(error);
+			});
+
+			const {rerender, unmount} = render(
+				<ThrottleTestComponent text="Hello" />,
+				{
+					stdout,
+					maxFps: 1,
+				},
+			);
+
+			rerender(<ThrottleTestComponent text="World" />);
+			stdout.end();
+			unmount();
+			clock.tick(1000);
+
+			t.false(
+				writeErrors.some(
+					error =>
+						(error as NodeJS.ErrnoException).code ===
+						'ERR_STREAM_WRITE_AFTER_END',
+				),
+			);
+		} finally {
+			clock.uninstall();
+		}
+	},
+);
+
+test.serial(
+	'unmount cancels pending throttled render when stdout is ended',
+	t => {
+		const clock = FakeTimers.install();
+		try {
+			const baselineStdout = new PassThrough() as unknown as NodeJS.WriteStream;
+			baselineStdout.columns = 100;
+
+			const baselineApp = render(<ThrottleTestComponent text="Hello" />, {
+				stdout: baselineStdout,
+				maxFps: 1,
+			});
+			baselineStdout.end();
+			baselineApp.unmount();
+			const baselineTimers = clock.countTimers();
+			clock.runAll();
+
+			const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+			stdout.columns = 100;
+
+			const {rerender, unmount} = render(
+				<ThrottleTestComponent text="Hello" />,
+				{
+					stdout,
+					maxFps: 1,
+				},
+			);
+			rerender(<ThrottleTestComponent text="World" />);
+			stdout.end();
+			unmount();
+
+			t.is(clock.countTimers(), baselineTimers);
+		} finally {
+			clock.uninstall();
+		}
+	},
+);
+
+const createTtyStdout = (columns?: number) => {
+	const stdout = createStdout(columns);
+	(stdout as any).isTTY = true;
+	return stdout;
+};
+
+const withFakeClock = (
+	run: (clock: ReturnType<typeof FakeTimers.install>) => void,
+) => {
+	const clock = FakeTimers.install();
+	try {
+		run(clock);
+	} finally {
+		clock.uninstall();
+	}
+};
+
+const captureWrites = (stdout: NodeJS.WriteStream): string[] => {
+	const writes: string[] = [];
+	const originalWrite = stdout.write;
+	(stdout as any).write = (...args: any[]) => {
+		writes.push(args[0] as string);
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+		return (originalWrite as any)(...args);
+	};
+
+	return writes;
+};
+
+const assertNoBsuEsuForUnchangedTrailingRerender = (
+	t: ExecutionContext,
+	element: React.ReactElement,
+) => {
+	withFakeClock(clock => {
+		const stdout = createTtyStdout();
+		const writes = captureWrites(stdout);
+		const {unmount, rerender} = render(element, {stdout, maxFps: 1});
+		try {
+			t.true(writes.includes(bsu), 'initial render should include bsu');
+
+			writes.length = 0;
+			rerender(element);
+			clock.tick(1000);
+
+			t.false(writes.includes(bsu), 'unchanged rerender should not emit bsu');
+			t.false(writes.includes(esu), 'unchanged rerender should not emit esu');
+		} finally {
+			unmount();
+		}
+	});
+};
+
+test.serial('no bsu/esu when output is unchanged', t => {
+	assertNoBsuEsuForUnchangedTrailingRerender(
+		t,
+		<ThrottleTestComponent text="Hello" />,
+	);
+});
+
+test.serial('no bsu/esu when output and cursor are unchanged', t => {
+	assertNoBsuEsuForUnchangedTrailingRerender(
+		t,
+		<ThrottleCursorTestComponent text="Hello" />,
+	);
+});
+
+test.serial('bsu/esu wraps throttledLog trailing call', t => {
+	withFakeClock(clock => {
+		const stdout = createTtyStdout();
+		const writes = captureWrites(stdout);
+		const {unmount, rerender} = render(<ThrottleTestComponent text="Hello" />, {
+			stdout,
+			maxFps: 1,
+		});
+		try {
+			// Leading call writes: bsu, content, esu
+			const leadingWrites = new Set(writes);
+			t.true(leadingWrites.has(bsu), 'leading call should include bsu');
+			t.true(leadingWrites.has(esu), 'leading call should include esu');
+
+			// Trigger a rerender inside the throttle window (will be deferred as trailing)
+			writes.length = 0;
+			rerender(<ThrottleTestComponent text="World" />);
+
+			// No immediate write yet (throttled)
+			const midWrites = [...writes];
+			t.false(
+				midWrites.some(w => w.includes('World')),
+				'trailing call should not write immediately',
+			);
+
+			// Advance past throttle window to trigger trailing call
+			writes.length = 0;
+			clock.tick(1000);
+
+			// Trailing call should also be wrapped with bsu/esu
+			t.true(writes.includes(bsu), 'trailing call should include bsu');
+			t.true(writes.includes(esu), 'trailing call should include esu');
+
+			// Verify bsu comes before content and esu comes after
+			const bsuIdx = writes.indexOf(bsu);
+			const esuIdx = writes.indexOf(esu);
+			t.true(bsuIdx < esuIdx, 'bsu should come before esu');
+		} finally {
+			unmount();
+		}
+	});
 });

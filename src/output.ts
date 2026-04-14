@@ -6,12 +6,7 @@ import {
 	styledCharsToString,
 	tokenize,
 } from '@alcalzone/ansi-tokenize';
-import type {OutputTransformer} from './render-node-to-output.js';
-
-const TAB_SPACES = '  '; // 2 spaces per tab
-
-const expandTabs = (text: string): string =>
-	text.includes('\t') ? text.replaceAll('\t', TAB_SPACES) : text;
+import {type OutputTransformer} from './render-node-to-output.js';
 
 /**
 "Virtual" output class
@@ -52,42 +47,53 @@ type UnclipOperation = {
 	type: 'unclip';
 };
 
-const intersectClips = (clips: Clip[]): Clip | undefined => {
-	if (clips.length === 0) {
-		return undefined;
+class OutputCaches {
+	widths = new Map<string, number>();
+	blockWidths = new Map<string, number>();
+	styledChars = new Map<string, StyledChar[]>();
+
+	getStyledChars(line: string): StyledChar[] {
+		let cached = this.styledChars.get(line);
+		if (cached === undefined) {
+			cached = styledCharsFromTokens(tokenize(line));
+			this.styledChars.set(line, cached);
+		}
+
+		return cached;
 	}
 
-	let x1: number | undefined;
-	let x2: number | undefined;
-	let y1: number | undefined;
-	let y2: number | undefined;
-
-	for (const c of clips) {
-		if (c.x1 !== undefined) {
-			x1 = x1 === undefined ? c.x1 : Math.max(x1, c.x1);
+	getStringWidth(text: string): number {
+		let cached = this.widths.get(text);
+		if (cached === undefined) {
+			cached = stringWidth(text);
+			this.widths.set(text, cached);
 		}
 
-		if (c.x2 !== undefined) {
-			x2 = x2 === undefined ? c.x2 : Math.min(x2, c.x2);
-		}
-
-		if (c.y1 !== undefined) {
-			y1 = y1 === undefined ? c.y1 : Math.max(y1, c.y1);
-		}
-
-		if (c.y2 !== undefined) {
-			y2 = y2 === undefined ? c.y2 : Math.min(y2, c.y2);
-		}
+		return cached;
 	}
 
-	return {x1, x2, y1, y2};
-};
+	getWidestLine(text: string): number {
+		let cached = this.blockWidths.get(text);
+		if (cached === undefined) {
+			let lineWidth = 0;
+			for (const line of text.split('\n')) {
+				lineWidth = Math.max(lineWidth, this.getStringWidth(line));
+			}
+
+			cached = lineWidth;
+			this.blockWidths.set(text, cached);
+		}
+
+		return cached;
+	}
+}
 
 export default class Output {
 	width: number;
 	height: number;
 
 	private readonly operations: Operation[] = [];
+	private readonly caches: OutputCaches = new OutputCaches();
 
 	constructor(options: Options) {
 		const {width, height} = options;
@@ -112,7 +118,7 @@ export default class Output {
 			type: 'write',
 			x,
 			y,
-			text: expandTabs(text),
+			text,
 			transformers,
 		});
 	}
@@ -165,7 +171,7 @@ export default class Output {
 				let {x, y} = operation;
 				let lines = text.split('\n');
 
-				const clip = intersectClips(clips);
+				const clip = clips.at(-1);
 
 				if (clip) {
 					const clipHorizontally =
@@ -177,7 +183,7 @@ export default class Output {
 					// If text is positioned outside of clipping area altogether,
 					// skip to the next operation to avoid unnecessary calculations
 					if (clipHorizontally) {
-						const width = Math.max(0, ...lines.map(line => stringWidth(line)));
+						const width = this.caches.getWidestLine(text);
 
 						if (x + width < clip.x1! || x > clip.x2!) {
 							continue;
@@ -195,7 +201,7 @@ export default class Output {
 					if (clipHorizontally) {
 						lines = lines.map(line => {
 							const from = x < clip.x1! ? clip.x1! - x : 0;
-							const width = stringWidth(line);
+							const width = this.caches.getStringWidth(line);
 							const to = x + width > clip.x2! ? clip.x2! - x : width;
 
 							return sliceAnsi(line, from, to);
@@ -233,48 +239,44 @@ export default class Output {
 						line = transformer(line, index);
 					}
 
-					const characters = styledCharsFromTokens(tokenize(line));
+					const characters = this.caches.getStyledChars(line);
 					let offsetX = x;
 
+					// Nothing to write (e.g. line was clipped away).
+					if (characters.length === 0) {
+						offsetY++;
+						continue;
+					}
+
+					const spaceCell: StyledChar = {
+						type: 'char',
+						value: ' ',
+						fullWidth: false,
+						styles: [],
+					};
+
+					// Wide characters (e.g. CJK) occupy two cells: a leading
+					// cell with the character and a trailing placeholder with
+					// value ''. When an overlapping write lands in the middle
+					// of a wide character, the boundary cells need cleanup so
+					// the terminal never renders a half-visible wide character.
+					if (
+						currentLine[offsetX]?.value === '' &&
+						offsetX > 0 &&
+						this.caches.getStringWidth(currentLine[offsetX - 1]?.value ?? '') >
+							1
+					) {
+						currentLine[offsetX - 1] = spaceCell;
+					}
+
 					for (const character of characters) {
-						// Check if this is a zero-width character (like U+FE0F emoji variation selector)
-						const rawWidth = stringWidth(character.value);
-
-						if (rawWidth === 0) {
-							// Zero-width characters (like variation selectors) should be appended
-							// to the previous cell rather than taking up their own space
-							const previousCell = currentLine[offsetX - 1];
-							if (previousCell?.value) {
-								// Measure width before and after appending to detect width changes
-								// This handles cases like ⏭ (width 1) + ️ (VS16) = ⏭️ (width 2)
-								const prevWidth = stringWidth(previousCell.value);
-								previousCell.value += character.value;
-								const newWidth = stringWidth(previousCell.value);
-
-								// If combining increased the display width, add placeholder cells
-								const extraWidth = newWidth - prevWidth;
-								if (extraWidth > 0) {
-									for (let i = 0; i < extraWidth; i++) {
-										currentLine[offsetX + i] = {
-											type: 'char',
-											value: '',
-											fullWidth: false,
-											styles: previousCell.styles,
-										};
-									}
-
-									offsetX += extraWidth;
-								}
-							}
-
-							// Don't advance offsetX for zero-width characters (already handled above if width changed)
-							continue;
-						}
-
 						currentLine[offsetX] = character;
 
-						// Determine printed width using string-width
-						const characterWidth = Math.max(1, rawWidth);
+						// Determine printed width using string-width to align with measurement
+						const characterWidth = Math.max(
+							1,
+							this.caches.getStringWidth(character.value),
+						);
 
 						// For multi-column characters, clear following cells to avoid stray spaces/artifacts
 						if (characterWidth > 1) {
@@ -289,6 +291,10 @@ export default class Output {
 						}
 
 						offsetX += characterWidth;
+					}
+
+					if (currentLine[offsetX]?.value === '') {
+						currentLine[offsetX] = spaceCell;
 					}
 
 					offsetY++;

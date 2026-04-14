@@ -73,6 +73,28 @@ test('update text node', t => {
 	);
 });
 
+test('remove style prop from intrinsic node', t => {
+	function Test({withStyle}: {readonly withStyle: boolean}) {
+		return (
+			<ink-box style={withStyle ? {marginLeft: 1} : undefined}>
+				<ink-text>X</ink-text>
+			</ink-box>
+		);
+	}
+
+	const stdout = createStdout();
+
+	const {rerender} = render(<Test withStyle />, {
+		stdout,
+		debug: true,
+	});
+
+	t.is((stdout.write as any).lastCall.args[0], ' X');
+
+	rerender(<Test withStyle={false} />);
+	t.is((stdout.write as any).lastCall.args[0], 'X');
+});
+
 test('append child', t => {
 	function Test({append}: {readonly append?: boolean}) {
 		if (append) {
@@ -331,7 +353,7 @@ test('support suspense', async t => {
 	const read = () => {
 		if (!promise) {
 			promise = new Promise(resolve => {
-				setTimeout(resolve, 500);
+				setTimeout(resolve, 100);
 			});
 
 			state = 'pending';
@@ -374,4 +396,54 @@ test('support suspense', async t => {
 	out.rerender(<Test />);
 
 	t.is((stdout.write as any).lastCall.args[0], 'Hello World');
+});
+
+test('support suspense with concurrent mode', async t => {
+	const stdout = createStdout();
+
+	let resolvePromise: () => void;
+	const promise = new Promise<void>(resolve => {
+		resolvePromise = resolve;
+	});
+
+	// eslint-disable-next-line prefer-const
+	let data: string | undefined;
+
+	function Suspendable() {
+		if (data === undefined) {
+			// eslint-disable-next-line @typescript-eslint/only-throw-error
+			throw promise;
+		}
+
+		return <Text>{data}</Text>;
+	}
+
+	function Test() {
+		return (
+			<Suspense fallback={<Text>Loading</Text>}>
+				<Suspendable />
+			</Suspense>
+		);
+	}
+
+	const {act} = await import('react');
+
+	await act(async () => {
+		render(<Test />, {
+			stdout,
+			debug: true,
+			concurrent: true,
+		});
+	});
+
+	t.is((stdout.write as any).lastCall.args[0], 'Loading');
+
+	// Resolve the suspense and wait for React to re-render
+	data = 'Hello Concurrent World';
+	await act(async () => {
+		resolvePromise();
+		await promise;
+	});
+
+	t.is((stdout.write as any).lastCall.args[0], 'Hello Concurrent World');
 });
