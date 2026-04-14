@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import url from 'node:url';
 import {createRequire} from 'node:module';
 import test from 'ava';
+import stripAnsi from 'strip-ansi';
 import {run} from './helpers/run.js';
 
 const require = createRequire(import.meta.url);
@@ -37,6 +38,21 @@ test.serial('exit on exit() with error', async t => {
 	t.true(output.includes('errored'));
 });
 
+test.serial('exit on exit() with error with value property', async t => {
+	const output = await run('exit-on-exit-with-error-value-property');
+	t.true(output.includes('errored'));
+});
+
+test.serial('exit on exit() with result value', async t => {
+	const output = await run('exit-on-exit-with-result');
+	t.true(output.includes('result:hello from ink'));
+});
+
+test.serial('exit on exit() with object result', async t => {
+	const output = await run('exit-on-exit-with-value-object');
+	t.true(output.includes('result:hello from ink object'));
+});
+
 test.serial('exit on exit() with raw mode', async t => {
 	const output = await run('exit-raw-on-exit');
 	t.true(output.includes('exited'));
@@ -58,7 +74,7 @@ test.serial('exit with thrown error', async t => {
 });
 
 test.serial('don’t exit while raw mode is active', async t => {
-	await new Promise<void>((resolve, _reject) => {
+	await new Promise<void>((resolve, reject) => {
 		const env: Record<string, string> = {
 			...process.env,
 			// eslint-disable-next-line @typescript-eslint/naming-convention
@@ -68,7 +84,7 @@ test.serial('don’t exit while raw mode is active', async t => {
 		const term = spawn(
 			'node',
 			[
-				'--loader=ts-node/esm',
+				'--import=tsx',
 				path.join(__dirname, './fixtures/exit-double-raw-mode.tsx'),
 			],
 			{
@@ -86,13 +102,12 @@ test.serial('don’t exit while raw mode is active', async t => {
 				setTimeout(() => {
 					t.false(isExited);
 					term.write('q');
-				}, 2000);
+				}, 500);
 
 				setTimeout(() => {
 					term.kill();
-					t.fail();
-					resolve();
-				}, 5000);
+					reject(new Error('Test timed out - process did not exit in time'));
+				}, 2000);
 			} else {
 				output += data;
 			}
@@ -110,8 +125,31 @@ test.serial('don’t exit while raw mode is active', async t => {
 				return;
 			}
 
-			t.fail();
-			resolve();
+			reject(new Error(`Process exited with code ${exitCode}`));
 		});
 	});
+});
+
+test.serial('exit when DEV is set', async t => {
+	const output = await run('exit-normally', {
+		env: {
+			// eslint-disable-next-line @typescript-eslint/naming-convention
+			DEV: 'true',
+		},
+	});
+	// Warning output depends on whether a local React DevTools server is running.
+	t.true(output.includes('exited'));
+});
+
+test.serial('exit on exit() with error and static output', async t => {
+	const output = await run('exit-with-static');
+	// Error is propagated, not swallowed
+	t.true(output.includes('errored'));
+	// Static items rendered
+	t.true(output.includes('A'));
+	t.true(output.includes('B'));
+	t.true(output.includes('C'));
+	// Static items NOT duplicated (the bug from #397)
+	const cleaned = stripAnsi(output);
+	t.is(cleaned.split('A').length - 1, 1);
 });

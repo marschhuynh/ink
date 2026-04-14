@@ -1,9 +1,9 @@
 import React, {
 	forwardRef,
 	useContext,
-	useRef,
 	useImperativeHandle,
 	useLayoutEffect,
+	useRef,
 	useState,
 	type PropsWithChildren,
 } from 'react';
@@ -100,7 +100,9 @@ const Box = forwardRef<BoxRef, PropsWithChildren<Props>>(
 
 			const getContentDimensions = () => {
 				const {yogaNode} = element;
-				if (!yogaNode) return {width: 0, height: 0};
+				if (!yogaNode) {
+					return {width: 0, height: 0};
+				}
 
 				let maxWidth = 0;
 				let maxHeight = 0;
@@ -131,7 +133,9 @@ const Box = forwardRef<BoxRef, PropsWithChildren<Props>>(
 
 			const getMaxScroll = () => {
 				const {yogaNode} = element;
-				if (!yogaNode) return {x: 0, y: 0};
+				if (!yogaNode) {
+					return {x: 0, y: 0};
+				}
 
 				const containerWidth =
 					yogaNode.getComputedWidth() -
@@ -161,11 +165,8 @@ const Box = forwardRef<BoxRef, PropsWithChildren<Props>>(
 						scrollStateRef.current.y = Math.max(0, Math.min(y, maxScroll.y));
 					}
 
-					element.internal_scrollOffset = {
-						...scrollStateRef.current,
-					};
-
-					setScrollVersion(v => v + 1);
+					element.internal_scrollOffset = {...scrollStateRef.current};
+					setScrollVersion(version => version + 1);
 				},
 				getScrollPosition() {
 					return {...scrollStateRef.current};
@@ -173,17 +174,19 @@ const Box = forwardRef<BoxRef, PropsWithChildren<Props>>(
 				scrollToTop() {
 					scrollStateRef.current.y = 0;
 					element.internal_scrollOffset = {...scrollStateRef.current};
-					setScrollVersion(v => v + 1);
+					setScrollVersion(version => version + 1);
 				},
 				scrollToBottom() {
 					const maxScroll = getMaxScroll();
 					scrollStateRef.current.y = maxScroll.y;
 					element.internal_scrollOffset = {...scrollStateRef.current};
-					setScrollVersion(v => v + 1);
+					setScrollVersion(version => version + 1);
 				},
 				getBounds() {
 					const {yogaNode} = element;
-					if (!yogaNode) return {x: 0, y: 0, width: 0, height: 0};
+					if (!yogaNode) {
+						return {x: 0, y: 0, width: 0, height: 0};
+					}
 
 					let x = yogaNode.getComputedLeft();
 					let y = yogaNode.getComputedTop();
@@ -242,6 +245,7 @@ const Box = forwardRef<BoxRef, PropsWithChildren<Props>>(
 			</ink-box>
 		);
 
+		// If this Box has a background color, provide it to children via context
 		if (backgroundColor) {
 			return (
 				<backgroundContext.Provider value={backgroundColor}>

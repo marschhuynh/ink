@@ -6,9 +6,15 @@ import getMaxWidth from './get-max-width.js';
 import squashTextNodes from './squash-text-nodes.js';
 import renderBorder from './render-border.js';
 import renderBackground from './render-background.js';
-import type {DOMElement} from './dom.js';
+import {type DOMElement} from './dom.js';
 import type Output from './output.js';
 
+// If parent container is `<Box>`, text nodes will be treated as separate nodes in
+// the tree and will have their own coordinates in the layout.
+// To ensure text nodes are aligned correctly, take X and Y of the first text node
+// and use it as offset for the rest of the nodes
+// Only first node is taken into account, because other text nodes can't have margin or padding,
+// so their coordinates will be relative to the first node anyway
 const applyPaddingToText = (node: DOMElement, text: string): string => {
 	const yogaNode = node.childNodes[0]?.yogaNode;
 
@@ -70,22 +76,22 @@ const calculateStickyPosition = (
 	parentBounds: BoundsInfo,
 ): {x: number; y: number; visible: boolean} => {
 	const {x: normalX, y: normalY} = normalPosition;
-	const {top: _parentTop, bottom: parentBottom} = parentBounds;
+	const {bottom: parentBottom} = parentBounds;
 	const {yogaNode} = node;
-	if (!yogaNode) return {x: normalX, y: normalY, visible: true};
+
+	if (!yogaNode) {
+		return {x: normalX, y: normalY, visible: true};
+	}
 
 	const nodeHeight = yogaNode.getComputedHeight();
-
 	const {containerY, containerHeight, borderTop, borderBottom} = scrollContext;
-
 	const viewportTop = containerY + borderTop;
 	const viewportBottom = containerY + containerHeight - borderBottom;
 
 	let finalY = normalY;
-
 	const stickyTop = node.style.top;
 
-	if (stickyTop !== undefined) {
+	if (typeof stickyTop === 'number') {
 		const minY = viewportTop + stickyTop;
 		finalY = Math.max(minY, normalY);
 
@@ -104,7 +110,10 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 	const {x: offsetX, y: offsetY} = position;
 	const {top: parentTop, bottom: parentBottom} = parentBounds;
 	const {yogaNode} = node;
-	if (!yogaNode || yogaNode.getDisplay() === Yoga.DISPLAY_NONE) return;
+
+	if (!yogaNode || yogaNode.getDisplay() === Yoga.DISPLAY_NONE) {
+		return;
+	}
 
 	const normalX = offsetX + yogaNode.getComputedLeft();
 	const normalY = offsetY + yogaNode.getComputedTop();
@@ -116,7 +125,9 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 		{top: parentTop, bottom: parentBottom},
 	);
 
-	if (!visible) return;
+	if (!visible) {
+		return;
+	}
 
 	let newTransformers = transformers;
 	if (typeof node.internal_transform === 'function') {
@@ -132,13 +143,17 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 		const child = childNode as DOMElement;
 		const childYoga = child.yogaNode;
 
-		if (!childYoga || childYoga.getDisplay() === Yoga.DISPLAY_NONE) continue;
+		if (!childYoga || childYoga.getDisplay() === Yoga.DISPLAY_NONE) {
+			continue;
+		}
 
 		if (child.nodeName === 'ink-text') {
 			let text = squashTextNodes(child);
+
 			if (text.length > 0) {
 				const currentWidth = widestLine(text);
 				const maxWidth = getMaxWidth(childYoga);
+
 				if (currentWidth > maxWidth) {
 					const textWrap = child.style.textWrap ?? 'wrap';
 					text = wrapText(text, maxWidth, textWrap);
@@ -235,6 +250,7 @@ export const renderNodeToScreenReaderOutput = (
 	return output;
 };
 
+// After nodes are laid out, render each to output object, which later gets rendered to terminal
 const renderNodeToOutput = (
 	node: DOMElement,
 	output: Output,
@@ -269,22 +285,13 @@ const renderNodeToOutput = (
 			return;
 		}
 
+		// Left and top positions in Yoga are relative to their parent node
 		const x = offsetX + yogaNode.getComputedLeft();
 		const y = offsetY + yogaNode.getComputedTop();
 		const nodeHeight = yogaNode.getComputedHeight();
 
-		if (node.style.position === 'sticky' && scrollContext) {
-			scrollContext.stickyNodes.push({
-				node,
-				offsetX,
-				offsetY,
-				transformers,
-				parentTop,
-				parentBottom,
-			});
-			return;
-		}
-
+		// Transformers are functions that transform final text output of each component
+		// See Output class for logic that applies transformers
 		let newTransformers = transformers;
 
 		if (typeof node.internal_transform === 'function') {
@@ -307,6 +314,19 @@ const renderNodeToOutput = (
 
 				output.write(x, y, text, {transformers: newTransformers});
 			}
+
+			return;
+		}
+
+		if (node.style.position === 'sticky' && scrollContext) {
+			scrollContext.stickyNodes.push({
+				node,
+				offsetX,
+				offsetY,
+				transformers,
+				parentTop,
+				parentBottom,
+			});
 
 			return;
 		}
@@ -359,12 +379,10 @@ const renderNodeToOutput = (
 				node.style.overflow === 'scroll' ||
 				node.style.overflowX === 'scroll' ||
 				node.style.overflowY === 'scroll';
-
 			const scrollOffset =
 				isScrollContainer && node.internal_scrollOffset
 					? node.internal_scrollOffset
 					: {x: 0, y: 0};
-
 			const newScrollContext: ScrollContext | undefined = isScrollContainer
 				? {
 						containerX: x,
@@ -379,10 +397,8 @@ const renderNodeToOutput = (
 						stickyNodes: [],
 					}
 				: scrollContext;
-
 			const childParentTop = y;
 			const childParentBottom = y + nodeHeight;
-
 			const sortedChildren = [...node.childNodes].sort((a, b) => {
 				const aZ = (a as DOMElement).style?.zIndex ?? 0;
 				const bZ = (b as DOMElement).style?.zIndex ?? 0;
@@ -408,7 +424,10 @@ const renderNodeToOutput = (
 						position: {x: sticky.offsetX, y: sticky.offsetY},
 						transformers: sticky.transformers,
 						scrollContext: newScrollContext,
-						parentBounds: {top: sticky.parentTop, bottom: sticky.parentBottom},
+						parentBounds: {
+							top: sticky.parentTop,
+							bottom: sticky.parentBottom,
+						},
 					});
 				}
 			}

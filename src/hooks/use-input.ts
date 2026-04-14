@@ -1,7 +1,7 @@
-import {useEffect} from 'react';
+import {useEffect, useEffectEvent} from 'react';
 import parseKeypress, {nonAlphanumericKeys} from '../parse-keypress.js';
 import reconciler from '../reconciler.js';
-import useStdin from './use-stdin.js';
+import {useStdinContext} from './use-stdin.js';
 
 /**
 Handy information about a key that was pressed.
@@ -36,6 +36,16 @@ export type Key = {
 	Page Up key was pressed.
 	*/
 	pageUp: boolean;
+
+	/**
+	Home key was pressed.
+	*/
+	home: boolean;
+
+	/**
+	End key was pressed.
+	*/
+	end: boolean;
 
 	/**
 	Return (Enter) key was pressed.
@@ -76,6 +86,41 @@ export type Key = {
 	[Meta key](https://en.wikipedia.org/wiki/Meta_key) was pressed.
 	*/
 	meta: boolean;
+
+	/**
+	Super key (Cmd on Mac, Win on Windows) was pressed.
+
+	Only available with kitty keyboard protocol.
+	*/
+	super: boolean;
+
+	/**
+	Hyper key was pressed.
+
+	Only available with kitty keyboard protocol.
+	*/
+	hyper: boolean;
+
+	/**
+	Caps Lock is active.
+
+	Only available with kitty keyboard protocol.
+	*/
+	capsLock: boolean;
+
+	/**
+	Num Lock is active.
+
+	Only available with kitty keyboard protocol.
+	*/
+	numLock: boolean;
+
+	/**
+	Event type for key events.
+
+	Only available with kitty keyboard protocol.
+	*/
+	eventType?: 'press' | 'repeat' | 'release';
 };
 
 type Handler = (input: string, key: Key) => void;
@@ -90,7 +135,8 @@ type Options = {
 };
 
 /**
-This hook is used for handling user input. It's a more convenient alternative to using `StdinContext` and listening for `data` events. The callback you pass to `useInput` is called for each character when the user enters any input. However, if the user pastes text and it's more than one character, the callback will be called only once, and the whole string will be passed as `input`.
+A React hook that returns `void` and handles user input.
+It's a more convenient alternative to using `StdinContext` and listening for `data` events. The callback you pass to `useInput` is called for each character when the user enters any input. However, if the user pastes text and it's more than one character, the callback will be called only once, and the whole string will be passed as `input`.
 
 ```
 import {useInput} from 'ink';
@@ -112,8 +158,8 @@ const UserInput = () => {
 */
 const useInput = (inputHandler: Handler, options: Options = {}) => {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
-	const {stdin, setRawMode, internal_exitOnCtrlC, internal_eventEmitter} =
-		useStdin();
+	const {setRawMode, internal_exitOnCtrlC, internal_eventEmitter} =
+		useStdinContext();
 
 	useEffect(() => {
 		if (options.isActive === false) {
@@ -127,70 +173,99 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
 		};
 	}, [options.isActive, setRawMode]);
 
+	const handleData = useEffectEvent((data: string) => {
+		const keypress = parseKeypress(data);
+
+		const key: Key = {
+			upArrow: keypress.name === 'up',
+			downArrow: keypress.name === 'down',
+			leftArrow: keypress.name === 'left',
+			rightArrow: keypress.name === 'right',
+			pageDown: keypress.name === 'pagedown',
+			pageUp: keypress.name === 'pageup',
+			home: keypress.name === 'home',
+			end: keypress.name === 'end',
+			return: keypress.name === 'return',
+			escape: keypress.name === 'escape',
+			ctrl: keypress.ctrl,
+			shift: keypress.shift,
+			tab: keypress.name === 'tab',
+			backspace: keypress.name === 'backspace',
+			delete: keypress.name === 'delete',
+			meta: keypress.meta,
+			// Kitty keyboard protocol modifiers
+			super: keypress.super ?? false,
+			hyper: keypress.hyper ?? false,
+			capsLock: keypress.capsLock ?? false,
+			numLock: keypress.numLock ?? false,
+			eventType: keypress.eventType,
+		};
+
+		let input: string;
+		if (keypress.isKittyProtocol) {
+			// Use text-as-codepoints field for printable keys (needed when
+			// reportAllKeysAsEscapeCodes flag is enabled), suppress non-printable
+			if (keypress.isPrintable) {
+				input = keypress.text ?? keypress.name;
+			} else if (keypress.ctrl && keypress.name.length === 1) {
+				// Ctrl+letter via codepoint 1-26 form: not printable text, but
+				// the letter name must flow through so handlers (e.g. exitOnCtrlC
+				// checking `input === 'c' && key.ctrl`) still work.
+				input = keypress.name;
+			} else {
+				input = '';
+			}
+		} else if (keypress.ctrl) {
+			// Keypress.name is guaranteed non-undefined by parseKeypress,
+			// but guard defensively since a TypeError here would crash the
+			// entire Ink app (see https://github.com/vadimdemedes/ink/issues/901).
+			input = keypress.name ?? '';
+		} else {
+			input = keypress.sequence;
+		}
+
+		if (
+			!keypress.isKittyProtocol &&
+			nonAlphanumericKeys.includes(keypress.name)
+		) {
+			input = '';
+		}
+
+		// Strip escape prefix from broken/incomplete sequences that
+		// parseKeypress did not fully resolve (e.g. a flushed "\u001B[").
+		if (input.startsWith('\u001B')) {
+			input = input.slice(1);
+		}
+
+		if (input.length === 1 && /[A-Z]/.test(input)) {
+			key.shift = true;
+		}
+
+		// If app is supposed to exit on Ctrl+C, skip input listeners.
+		if (input === 'c' && key.ctrl && internal_exitOnCtrlC) {
+			return;
+		}
+
+		// Use discreteUpdates to assign DiscreteEventPriority to state
+		// updates from keyboard input, ensuring they are processed at the
+		// highest priority in concurrent mode.
+		// @ts-expect-error Types require 5 arguments (fn, a, b, c, d) but only fn is needed at runtime.
+		reconciler.discreteUpdates(() => {
+			inputHandler(input, key);
+		});
+	});
+
 	useEffect(() => {
 		if (options.isActive === false) {
 			return;
 		}
 
-		const handleData = (data: string) => {
-			const keypress = parseKeypress(data);
-
-			const key = {
-				upArrow: keypress.name === 'up',
-				downArrow: keypress.name === 'down',
-				leftArrow: keypress.name === 'left',
-				rightArrow: keypress.name === 'right',
-				pageDown: keypress.name === 'pagedown',
-				pageUp: keypress.name === 'pageup',
-				return: keypress.name === 'return',
-				escape: keypress.name === 'escape',
-				ctrl: keypress.ctrl,
-				shift: keypress.shift,
-				tab: keypress.name === 'tab',
-				backspace: keypress.name === 'backspace',
-				delete: keypress.name === 'delete',
-				// `parseKeypress` parses \u001B\u001B[A (meta + up arrow) as meta = false
-				// but with option = true, so we need to take this into account here
-				// to avoid breaking changes in Ink.
-				// TODO(vadimdemedes): consider removing this in the next major version.
-				meta: keypress.meta || keypress.name === 'escape' || keypress.option,
-			};
-
-			let input = keypress.ctrl ? keypress.name : keypress.sequence;
-
-			if (nonAlphanumericKeys.includes(keypress.name)) {
-				input = '';
-			}
-
-			// Strip meta if it's still remaining after `parseKeypress`
-			// TODO(vadimdemedes): remove this in the next major version.
-			if (input.startsWith('\u001B')) {
-				input = input.slice(1);
-			}
-
-			if (
-				input.length === 1 &&
-				typeof input[0] === 'string' &&
-				/[A-Z]/.test(input[0])
-			) {
-				key.shift = true;
-			}
-
-			// If app is not supposed to exit on Ctrl+C, then let input listener handle it
-			if (!(input === 'c' && key.ctrl) || !internal_exitOnCtrlC) {
-				// @ts-expect-error TypeScript types for `batchedUpdates` require an argument, but React's codebase doesn't provide it and it works without it as expected.
-				reconciler.batchedUpdates(() => {
-					inputHandler(input, key);
-				});
-			}
-		};
-
-		internal_eventEmitter?.on('input', handleData);
+		internal_eventEmitter.on('input', handleData);
 
 		return () => {
-			internal_eventEmitter?.removeListener('input', handleData);
+			internal_eventEmitter.removeListener('input', handleData);
 		};
-	}, [options.isActive, stdin, internal_exitOnCtrlC, inputHandler]);
+	}, [options.isActive, internal_eventEmitter]);
 };
 
 export default useInput;

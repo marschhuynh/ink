@@ -1,15 +1,18 @@
+import process from 'node:process';
 import createReconciler, {type ReactContext} from 'react-reconciler';
 import {
 	DefaultEventPriority,
 	NoEventPriority,
 } from 'react-reconciler/constants.js';
+import * as Scheduler from 'scheduler';
 import Yoga, {type Node as YogaNode} from 'yoga-layout';
-import {createContext} from 'react';
+import {createContext, version as reactVersion} from 'react';
 import {
 	createTextNode,
 	appendChildNode,
 	insertBeforeNode,
 	removeChildNode,
+	emitLayoutListeners,
 	setStyle,
 	setTextNodeValue,
 	createNode,
@@ -21,30 +24,22 @@ import {
 } from './dom.js';
 import applyStyles, {type Styles} from './styles.js';
 import {type OutputTransformer} from './render-node-to-output.js';
-import {isDev} from './utils.js';
 
 // We need to conditionally perform devtools connection to avoid
 // accidentally breaking other third-party code.
 // See https://github.com/vadimdemedes/ink/issues/384
-if (isDev()) {
+// See https://github.com/vadimdemedes/ink/issues/648
+if (process.env['DEV'] === 'true') {
+	// Intentionally no warning when the package is missing.
+	// DEV may be set for other reasons; devtools is opt-in via installing the package.
+	let isDevtoolsInstalled = false;
 	try {
+		import.meta.resolve('react-devtools-core');
+		isDevtoolsInstalled = true;
+	} catch {}
+
+	if (isDevtoolsInstalled) {
 		await import('./devtools.js');
-	} catch (error: any) {
-		if (error.code === 'ERR_MODULE_NOT_FOUND') {
-			console.warn(
-				`
-The environment variable DEV is set to true, so Ink tried to import \`react-devtools-core\`,
-but this failed as it was not installed. Debugging with React Devtools requires it.
-
-To install use this command:
-
-$ npm install --save-dev react-devtools-core
-				`.trim() + '\n',
-			);
-		} else {
-			// eslint-disable-next-line @typescript-eslint/only-throw-error
-			throw error;
-		}
 	}
 }
 
@@ -104,12 +99,41 @@ async function loadPackageJson() {
 		new URL('../package.json', import.meta.url),
 		'utf8',
 	);
-	return JSON.parse(content) as {name: string; version: string};
+
+	const parsedContent = JSON.parse(content) as
+		| {
+				name?: string;
+				version?: string;
+		  }
+		| undefined;
+
+	return {
+		name: parsedContent?.name,
+		version: parsedContent?.version,
+	};
 }
 
-const packageJson = isDev()
-	? await loadPackageJson()
-	: {name: undefined, version: undefined};
+let packageInfo = {
+	name: 'ink',
+	version: reactVersion,
+};
+
+if (process.env['DEV'] === 'true') {
+	try {
+		const loaded = await loadPackageJson();
+		packageInfo = {
+			// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+			name: loaded.name || packageInfo.name,
+			// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+			version: loaded.version || packageInfo.version,
+		};
+	} catch (error) {
+		console.warn(
+			'Failed to load package.json in development mode. Falling back to default renderer metadata.',
+			error,
+		);
+	}
+}
 
 export default createReconciler<
 	ElementNames,
@@ -137,6 +161,8 @@ export default createReconciler<
 		if (typeof rootNode.onComputeLayout === 'function') {
 			rootNode.onComputeLayout();
 		}
+
+		emitLayoutListeners(rootNode);
 
 		// Since renders are throttled at the instance level and <Static> component children
 		// are rendered only once and then get deleted, we need an escape hatch to
@@ -208,11 +234,6 @@ export default createReconciler<
 				continue;
 			}
 
-			if (key === 'internal_scrollVersion') {
-				node.internal_scrollVersion = value as number;
-				continue;
-			}
-
 			setAttribute(node, key, value as DOMNodeAttribute);
 		}
 
@@ -251,6 +272,14 @@ export default createReconciler<
 	supportsMutation: true,
 	supportsPersistence: false,
 	supportsHydration: false,
+	// Scheduler integration for concurrent mode
+	supportsMicrotasks: true,
+	scheduleMicrotask: queueMicrotask,
+	// @ts-expect-error @types/react-reconciler is outdated and doesn't include scheduleCallback
+	scheduleCallback: Scheduler.unstable_scheduleCallback,
+	cancelCallback: Scheduler.unstable_cancelCallback,
+	shouldYield: Scheduler.unstable_shouldYield,
+	now: Scheduler.unstable_now,
 	scheduleTimeout: setTimeout,
 	cancelTimeout: clearTimeout,
 	noTimeout: -1,
@@ -265,6 +294,10 @@ export default createReconciler<
 	removeChildFromContainer(node, removeNode) {
 		removeChildNode(node, removeNode);
 		cleanupYogaNode(removeNode.yogaNode);
+
+		if (removeNode.internal_static && currentRootNode) {
+			currentRootNode.staticNode = undefined;
+		}
 	},
 	commitUpdate(node, _type, oldProps, newProps) {
 		if (currentRootNode && node.internal_static) {
@@ -299,17 +332,16 @@ export default createReconciler<
 					continue;
 				}
 
-				if (key === 'internal_scrollVersion') {
-					node.internal_scrollVersion = value as number;
-					continue;
-				}
-
 				setAttribute(node, key, value as DOMNodeAttribute);
 			}
 		}
 
 		if (style && node.yogaNode) {
-			applyStyles(node.yogaNode, style);
+			applyStyles(
+				node.yogaNode,
+				style,
+				(newProps['style'] as Styles | undefined) ?? {},
+			);
 		}
 	},
 	commitTextUpdate(node, _oldText, newText) {
@@ -318,6 +350,10 @@ export default createReconciler<
 	removeChild(node, removeNode) {
 		removeChildNode(node, removeNode);
 		cleanupYogaNode(removeNode.yogaNode);
+
+		if (removeNode.internal_static && currentRootNode) {
+			currentRootNode.staticNode = undefined;
+		}
 	},
 	setCurrentUpdatePriority(newPriority: number) {
 		currentUpdatePriority = newPriority;
@@ -331,7 +367,8 @@ export default createReconciler<
 		return DefaultEventPriority;
 	},
 	maySuspendCommit() {
-		return false;
+		// Return true to enable Suspense resource preloading
+		return true;
 	},
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	NotPendingTransition: undefined,
@@ -359,7 +396,6 @@ export default createReconciler<
 	waitForCommitToBeReady() {
 		return null;
 	},
-	// @ts-expect-error react-reconciler types don't include these properties
-	rendererPackageName: packageJson.name,
-	rendererVersion: packageJson.version,
+	rendererPackageName: packageInfo.name,
+	rendererVersion: packageInfo.version,
 });

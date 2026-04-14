@@ -1,3 +1,4 @@
+import process from 'node:process';
 import React, {useState, useCallback, useEffect} from 'react';
 import {render, useInput, useApp, Text} from '../../src/index.js';
 
@@ -13,8 +14,12 @@ function App() {
 	useInput(handleInput, {isActive: false});
 
 	useEffect(() => {
-		setTimeout(exit, 1000);
+		process.stdout.write('__READY__');
 	}, []);
+
+	useEffect(() => {
+		setTimeout(exit, 100);
+	}, [exit]);
 
 	return <Text>{input}</Text>;
 }

@@ -1,210 +1,212 @@
 import React from 'react';
 import test from 'ava';
-import {Box, Text} from '../src/index.js';
-import {renderToString} from './helpers/render-to-string.js';
+import {Box, Text, render} from '../src/index.js';
+import {
+	renderToString,
+	renderToStringAsync,
+} from './helpers/render-to-string.js';
+import createStdout from './helpers/create-stdout.js';
 
-test('position absolute with top offset', t => {
+test('absolute position with top and left offsets', t => {
 	const output = renderToString(
-		<Box height={5} width={10}>
-			<Box position="absolute" top={2}>
-				<Text>X</Text>
-			</Box>
-		</Box>,
-	);
-
-	const lines = output.split('\n');
-	t.is(lines[0], '');
-	t.is(lines[1], '');
-	t.is(lines[2]?.trimEnd(), 'X');
-});
-
-test('position absolute with left offset', t => {
-	const output = renderToString(
-		<Box height={3} width={10}>
-			<Box position="absolute" left={5}>
-				<Text>X</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.true(output.includes('     X'));
-});
-
-test('position absolute with top and left offset', t => {
-	const output = renderToString(
-		<Box height={5} width={10}>
-			<Box position="absolute" top={2} left={3}>
-				<Text>X</Text>
-			</Box>
-		</Box>,
-	);
-
-	const lines = output.split('\n');
-	t.is(lines[2]?.trimEnd(), '   X');
-});
-
-test('position absolute with right offset', t => {
-	const output = renderToString(
-		<Box height={3} width={10}>
-			<Box position="absolute" right={0}>
-				<Text>X</Text>
-			</Box>
-		</Box>,
-		{columns: 10},
-	);
-
-	const lines = output.split('\n');
-	t.true(lines[0]?.endsWith('X'));
-});
-
-test('position absolute with bottom offset', t => {
-	const output = renderToString(
-		<Box height={5} width={10}>
-			<Box position="absolute" bottom={0}>
-				<Text>X</Text>
-			</Box>
-		</Box>,
-	);
-
-	const lines = output.split('\n');
-	t.is(lines[4]?.trimEnd(), 'X');
-});
-
-test('zIndex - higher zIndex renders on top', t => {
-	const output = renderToString(
-		<Box height={3} width={20}>
-			<Box position="absolute" top={0} left={0} zIndex={1}>
-				<Text>AAA</Text>
-			</Box>
-			<Box position="absolute" top={0} left={1} zIndex={2}>
-				<Text>BBB</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.true(output.includes('ABBB'));
-});
-
-test('zIndex - lower zIndex renders below', t => {
-	const output = renderToString(
-		<Box height={3} width={20}>
-			<Box position="absolute" top={0} left={1} zIndex={2}>
-				<Text>BBB</Text>
-			</Box>
-			<Box position="absolute" top={0} left={0} zIndex={1}>
-				<Text>AAA</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.true(output.includes('ABBB'));
-});
-
-test('zIndex - default zIndex is 0', t => {
-	const output = renderToString(
-		<Box height={3} width={20}>
-			<Box position="absolute" top={0} left={0}>
-				<Text>First</Text>
-			</Box>
-			<Box position="absolute" top={0} left={0} zIndex={1}>
-				<Text>Second</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.true(output.includes('Second'));
-});
-
-test('zIndex - same zIndex renders in DOM order', t => {
-	const output = renderToString(
-		<Box height={3} width={20}>
-			<Box position="absolute" top={0} left={0} zIndex={1}>
-				<Text>AAA</Text>
-			</Box>
-			<Box position="absolute" top={0} left={0} zIndex={1}>
-				<Text>BBB</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.true(output.includes('BBB'));
-});
-
-test('multiple positioned elements with different zIndex', t => {
-	const output = renderToString(
-		<Box height={5} width={30}>
-			<Box position="absolute" top={0} left={0} zIndex={3}>
-				<Text>TOP</Text>
-			</Box>
-			<Box position="absolute" top={0} left={0} zIndex={1}>
-				<Text>BOTTOM</Text>
-			</Box>
-			<Box position="absolute" top={0} left={0} zIndex={2}>
-				<Text>MIDDLE</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.true(output.includes('TOP'));
-});
-
-test('position absolute clipped by overflow hidden - horizontal', t => {
-	const output = renderToString(
-		<Box height={3} width={10} overflow="hidden">
-			<Box position="absolute" top={0} left={15}>
-				<Text>HIDDEN</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.false(output.includes('HIDDEN'));
-});
-
-test('position absolute clipped by overflow hidden - vertical', t => {
-	const output = renderToString(
-		<Box height={3} width={20} overflow="hidden">
-			<Box position="absolute" top={10} left={0}>
-				<Text>HIDDEN</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.false(output.includes('HIDDEN'));
-});
-
-test('position absolute partially clipped by overflow hidden', t => {
-	const output = renderToString(
-		<Box height={3} width={10} overflow="hidden">
-			<Box position="absolute" top={0} left={7}>
-				<Text>ABCDEF</Text>
-			</Box>
-		</Box>,
-	);
-
-	t.true(output.includes('ABC'));
-	t.false(output.includes('ABCDEF'));
-});
-
-test('position absolute visible within overflow hidden container', t => {
-	const output = renderToString(
-		<Box height={5} width={20} overflow="hidden">
+		<Box width={5} height={3}>
 			<Box position="absolute" top={1} left={2}>
-				<Text>VISIBLE</Text>
+				<Text>X</Text>
 			</Box>
 		</Box>,
 	);
 
-	t.true(output.includes('VISIBLE'));
+	t.is(output, '\n  X\n');
 });
 
-test('position absolute outside left boundary is clipped', t => {
+test('absolute position with bottom and right offsets', t => {
 	const output = renderToString(
-		<Box height={3} width={20} overflow="hidden">
-			<Box position="absolute" top={0} left={-10}>
-				<Text>HIDDEN</Text>
+		<Box width={6} height={4}>
+			<Box position="absolute" bottom={1} right={1}>
+				<Text>X</Text>
 			</Box>
 		</Box>,
 	);
 
-	t.false(output.includes('HIDDEN'));
+	t.is(output, '\n\n    X\n');
+});
+
+test('absolute position with percentage offsets', t => {
+	const output = renderToString(
+		<Box width={6} height={4}>
+			<Box position="absolute" top="50%" left="50%">
+				<Text>X</Text>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, '\n\n   X\n');
+});
+
+test('absolute position with percentage bottom and right offsets', t => {
+	const output = renderToString(
+		<Box width={6} height={4}>
+			<Box position="absolute" bottom="50%" right="50%">
+				<Text>X</Text>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, '\n  X\n\n');
+});
+
+test('relative position offsets visual position while keeping flow', t => {
+	const output = renderToString(
+		<Box width={5}>
+			<Box position="relative" left={2}>
+				<Text>A</Text>
+			</Box>
+			<Text>B</Text>
+		</Box>,
+	);
+
+	t.is(output, ' BA');
+});
+
+test('static position ignores offsets', t => {
+	const output = renderToString(
+		<Box width={5}>
+			<Box position="static" left={2}>
+				<Text>A</Text>
+			</Box>
+			<Text>B</Text>
+		</Box>,
+	);
+
+	t.is(output, 'AB');
+});
+
+test('static position ignores percentage offsets', t => {
+	const output = renderToString(
+		<Box width={5}>
+			<Box position="static" left="50%">
+				<Text>A</Text>
+			</Box>
+			<Text>B</Text>
+		</Box>,
+	);
+
+	t.is(output, 'AB');
+});
+
+test('clears top offset on rerender', t => {
+	const stdout = createStdout();
+
+	function Test({top}: {readonly top?: number}) {
+		return (
+			<Box width={5} height={3}>
+				<Box position="absolute" top={top} left={2}>
+					<Text>X</Text>
+				</Box>
+			</Box>
+		);
+	}
+
+	const {rerender} = render(<Test top={1} />, {
+		stdout,
+		debug: true,
+	});
+
+	t.is(stdout.write.lastCall.args[0], '\n  X\n');
+
+	rerender(<Test top={undefined} />);
+	t.is(stdout.write.lastCall.args[0], '  X\n\n');
+});
+
+test('clears percentage top and left offsets on rerender', t => {
+	const stdout = createStdout();
+
+	function Test({top, left}: {readonly top?: string; readonly left?: string}) {
+		return (
+			<Box width={6} height={4}>
+				<Box position="absolute" top={top} left={left}>
+					<Text>X</Text>
+				</Box>
+			</Box>
+		);
+	}
+
+	const {rerender} = render(<Test top="50%" left="50%" />, {
+		stdout,
+		debug: true,
+	});
+
+	t.is(stdout.write.lastCall.args[0], '\n\n   X\n');
+
+	rerender(<Test top={undefined} left={undefined} />);
+	t.is(stdout.write.lastCall.args[0], 'X\n\n\n');
+});
+
+test('clears percentage top and left offsets when props are omitted on rerender', t => {
+	const stdout = createStdout();
+
+	function Test({showOffsets}: {readonly showOffsets: boolean}) {
+		return (
+			<Box width={6} height={4}>
+				<Box
+					position="absolute"
+					{...(showOffsets ? {top: '50%' as const, left: '50%' as const} : {})}
+				>
+					<Text>X</Text>
+				</Box>
+			</Box>
+		);
+	}
+
+	const {rerender} = render(<Test showOffsets />, {
+		stdout,
+		debug: true,
+	});
+
+	t.is(stdout.write.lastCall.args[0], '\n\n   X\n');
+
+	rerender(<Test showOffsets={false} />);
+	t.is(stdout.write.lastCall.args[0], 'X\n\n\n');
+});
+
+test('clears bottom and right offsets on rerender', t => {
+	const stdout = createStdout();
+
+	function Test({
+		bottom,
+		right,
+	}: {
+		readonly bottom?: number;
+		readonly right?: number;
+	}) {
+		return (
+			<Box width={6} height={4}>
+				<Box position="absolute" bottom={bottom} right={right}>
+					<Text>X</Text>
+				</Box>
+			</Box>
+		);
+	}
+
+	const {rerender} = render(<Test bottom={1} right={1} />, {
+		stdout,
+		debug: true,
+	});
+
+	t.is(stdout.write.lastCall.args[0], '\n\n    X\n');
+
+	rerender(<Test bottom={undefined} right={undefined} />);
+	t.is(stdout.write.lastCall.args[0], 'X\n\n\n');
+});
+
+test('absolute position with top and left offsets - concurrent', async t => {
+	const output = await renderToStringAsync(
+		<Box width={5} height={3}>
+			<Box position="absolute" top={1} left={2}>
+				<Text>X</Text>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, '\n  X\n');
 });

@@ -15,6 +15,7 @@ const renderBackground = (
 	const width = node.yogaNode!.getComputedWidth();
 	const height = node.yogaNode!.getComputedHeight();
 
+	// Calculate the actual content area considering borders
 	const leftBorderWidth =
 		node.style.borderStyle && node.style.borderLeft !== false ? 1 : 0;
 	const rightBorderWidth =
@@ -31,6 +32,7 @@ const renderBackground = (
 		return;
 	}
 
+	// Create background fill for each row
 	const backgroundLine = colorize(
 		' '.repeat(contentWidth),
 		node.style.backgroundColor,
