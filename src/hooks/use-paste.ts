@@ -1,4 +1,4 @@
-import {useEffect, useEffectEvent} from 'react';
+import {useEffect, useRef} from 'react';
 import reconciler from '../reconciler.js';
 import {useStdinContext} from './use-stdin.js';
 
@@ -58,19 +58,24 @@ const usePaste = (
 		};
 	}, [options.isActive, setRawMode, setBracketedPasteMode]);
 
-	const handlePaste = useEffectEvent((text: string) => {
-		// Use discreteUpdates to assign DiscreteEventPriority to state
-		// updates triggered by paste, matching the priority of useInput.
-		// @ts-expect-error Types require 5 arguments (fn, a, b, c, d) but only fn is needed at runtime.
-		reconciler.discreteUpdates(() => {
-			handler(text);
-		});
-	});
+	// Use a ref to always have the latest handler. useEffectEvent has a stale
+	// closure bug in ink's custom React reconciler when used with forwardRef.
+	const handlerRef = useRef(handler);
+	handlerRef.current = handler;
 
 	useEffect(() => {
 		if (options.isActive === false) {
 			return;
 		}
+
+		const handlePaste = (text: string): void => {
+			// Use discreteUpdates to assign DiscreteEventPriority to state
+			// updates triggered by paste, matching the priority of useInput.
+			// @ts-expect-error Types require 5 arguments (fn, a, b, c, d) but only fn is needed at runtime.
+			reconciler.discreteUpdates(() => {
+				handlerRef.current(text);
+			});
+		};
 
 		internal_eventEmitter.on('paste', handlePaste);
 

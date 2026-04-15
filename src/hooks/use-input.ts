@@ -1,4 +1,4 @@
-import {useEffect, useEffectEvent} from 'react';
+import {useEffect, useRef} from 'react';
 import parseKeypress, {nonAlphanumericKeys} from '../parse-keypress.js';
 import reconciler from '../reconciler.js';
 import {useStdinContext} from './use-stdin.js';
@@ -161,6 +161,15 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
 	const {setRawMode, internal_exitOnCtrlC, internal_eventEmitter} =
 		useStdinContext();
 
+	// Use a ref to always have the latest handler without re-subscribing
+	// to the event emitter. This avoids useEffectEvent which has a stale
+	// closure bug in ink's custom React reconciler when used with forwardRef.
+	const handlerRef = useRef(inputHandler);
+	handlerRef.current = inputHandler;
+
+	const exitOnCtrlCRef = useRef(internal_exitOnCtrlC);
+	exitOnCtrlCRef.current = internal_exitOnCtrlC;
+
 	useEffect(() => {
 		if (options.isActive === false) {
 			return;
@@ -173,92 +182,92 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
 		};
 	}, [options.isActive, setRawMode]);
 
-	const handleData = useEffectEvent((data: string) => {
-		const keypress = parseKeypress(data);
-
-		const key: Key = {
-			upArrow: keypress.name === 'up',
-			downArrow: keypress.name === 'down',
-			leftArrow: keypress.name === 'left',
-			rightArrow: keypress.name === 'right',
-			pageDown: keypress.name === 'pagedown',
-			pageUp: keypress.name === 'pageup',
-			home: keypress.name === 'home',
-			end: keypress.name === 'end',
-			return: keypress.name === 'return',
-			escape: keypress.name === 'escape',
-			ctrl: keypress.ctrl,
-			shift: keypress.shift,
-			tab: keypress.name === 'tab',
-			backspace: keypress.name === 'backspace',
-			delete: keypress.name === 'delete',
-			meta: keypress.meta,
-			// Kitty keyboard protocol modifiers
-			super: keypress.super ?? false,
-			hyper: keypress.hyper ?? false,
-			capsLock: keypress.capsLock ?? false,
-			numLock: keypress.numLock ?? false,
-			eventType: keypress.eventType,
-		};
-
-		let input: string;
-		if (keypress.isKittyProtocol) {
-			// Use text-as-codepoints field for printable keys (needed when
-			// reportAllKeysAsEscapeCodes flag is enabled), suppress non-printable
-			if (keypress.isPrintable) {
-				input = keypress.text ?? keypress.name;
-			} else if (keypress.ctrl && keypress.name.length === 1) {
-				// Ctrl+letter via codepoint 1-26 form: not printable text, but
-				// the letter name must flow through so handlers (e.g. exitOnCtrlC
-				// checking `input === 'c' && key.ctrl`) still work.
-				input = keypress.name;
-			} else {
-				input = '';
-			}
-		} else if (keypress.ctrl) {
-			// Keypress.name is guaranteed non-undefined by parseKeypress,
-			// but guard defensively since a TypeError here would crash the
-			// entire Ink app (see https://github.com/vadimdemedes/ink/issues/901).
-			input = keypress.name ?? '';
-		} else {
-			input = keypress.sequence;
-		}
-
-		if (
-			!keypress.isKittyProtocol &&
-			nonAlphanumericKeys.includes(keypress.name)
-		) {
-			input = '';
-		}
-
-		// Strip escape prefix from broken/incomplete sequences that
-		// parseKeypress did not fully resolve (e.g. a flushed "\u001B[").
-		if (input.startsWith('\u001B')) {
-			input = input.slice(1);
-		}
-
-		if (input.length === 1 && /[A-Z]/.test(input)) {
-			key.shift = true;
-		}
-
-		// If app is supposed to exit on Ctrl+C, skip input listeners.
-		if (input === 'c' && key.ctrl && internal_exitOnCtrlC) {
-			return;
-		}
-
-		// Use discreteUpdates to assign DiscreteEventPriority to state
-		// updates from keyboard input, ensuring they are processed at the
-		// highest priority in concurrent mode.
-		// @ts-expect-error Types require 5 arguments (fn, a, b, c, d) but only fn is needed at runtime.
-		reconciler.discreteUpdates(() => {
-			inputHandler(input, key);
-		});
-	});
-
 	useEffect(() => {
 		if (options.isActive === false) {
 			return;
 		}
+
+		const handleData = (data: string): void => {
+			const keypress = parseKeypress(data);
+
+			const key: Key = {
+				upArrow: keypress.name === 'up',
+				downArrow: keypress.name === 'down',
+				leftArrow: keypress.name === 'left',
+				rightArrow: keypress.name === 'right',
+				pageDown: keypress.name === 'pagedown',
+				pageUp: keypress.name === 'pageup',
+				home: keypress.name === 'home',
+				end: keypress.name === 'end',
+				return: keypress.name === 'return',
+				escape: keypress.name === 'escape',
+				ctrl: keypress.ctrl,
+				shift: keypress.shift,
+				tab: keypress.name === 'tab',
+				backspace: keypress.name === 'backspace',
+				delete: keypress.name === 'delete',
+				meta: keypress.meta,
+				// Kitty keyboard protocol modifiers
+				super: keypress.super ?? false,
+				hyper: keypress.hyper ?? false,
+				capsLock: keypress.capsLock ?? false,
+				numLock: keypress.numLock ?? false,
+				eventType: keypress.eventType,
+			};
+
+			let input: string;
+			if (keypress.isKittyProtocol) {
+				// Use text-as-codepoints field for printable keys (needed when
+				// reportAllKeysAsEscapeCodes flag is enabled), suppress non-printable
+				if (keypress.isPrintable) {
+					input = keypress.text ?? keypress.name;
+				} else if (keypress.ctrl && keypress.name.length === 1) {
+					// Ctrl+letter via codepoint 1-26 form: not printable text, but
+					// the letter name must flow through so handlers (e.g. exitOnCtrlC
+					// checking `input === 'c' && key.ctrl`) still work.
+					input = keypress.name;
+				} else {
+					input = '';
+				}
+			} else if (keypress.ctrl) {
+				// Keypress.name is guaranteed non-undefined by parseKeypress,
+				// but guard defensively since a TypeError here would crash the
+				// entire Ink app (see https://github.com/vadimdemedes/ink/issues/901).
+				input = keypress.name ?? '';
+			} else {
+				input = keypress.sequence;
+			}
+
+			if (
+				!keypress.isKittyProtocol &&
+				nonAlphanumericKeys.includes(keypress.name)
+			) {
+				input = '';
+			}
+
+			// Strip escape prefix from broken/incomplete sequences that
+			// parseKeypress did not fully resolve (e.g. a flushed "\u001B[").
+			if (input.startsWith('\u001B')) {
+				input = input.slice(1);
+			}
+
+			if (input.length === 1 && /[A-Z]/.test(input)) {
+				key.shift = true;
+			}
+
+			// If app is supposed to exit on Ctrl+C, skip input listeners.
+			if (input === 'c' && key.ctrl && exitOnCtrlCRef.current) {
+				return;
+			}
+
+			// Use discreteUpdates to assign DiscreteEventPriority to state
+			// updates from keyboard input, ensuring they are processed at the
+			// highest priority in concurrent mode.
+			// @ts-expect-error Types require 5 arguments (fn, a, b, c, d) but only fn is needed at runtime.
+			reconciler.discreteUpdates(() => {
+				handlerRef.current(input, key);
+			});
+		};
 
 		internal_eventEmitter.on('input', handleData);
 
