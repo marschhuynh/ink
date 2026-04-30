@@ -42,7 +42,23 @@ const squashTextNodes = (node: DOMElement): string => {
 		text += nodeText;
 	}
 
-	return sanitizeAnsi(text);
+	return expandTabs(sanitizeAnsi(text));
+};
+
+/**
+ * Normalize tab characters to spaces for consistent layout in Ink/Yoga.
+ *
+ * `string-width` counts `\t` as 0 width (it's a `\p{Control}` character),
+ * which causes Yoga to allocate too little space for tab-containing text.
+ * The terminal then renders tabs as advancing to the next tab stop (up to 8
+ * columns), producing misaligned layouts.
+ *
+ * Expanding tabs to spaces here — the single chokepoint where all text passes
+ * before both measurement and rendering — fixes the entire pipeline.
+ */
+const expandTabs = (text: string, tabSize = 4): string => {
+	if (!text.includes('\t')) return text;
+	return text.replaceAll('\t', ' '.repeat(tabSize));
 };
 
 export default squashTextNodes;

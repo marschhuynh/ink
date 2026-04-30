@@ -1,5 +1,7 @@
 import widestLine from 'widest-line';
 
+export const MEASURE_TEXT_CACHE_MAX = 256;
+
 const cache = new Map<string, Output>();
 
 type Output = {
@@ -18,6 +20,8 @@ const measureText = (text: string): Output => {
 	const cachedDimensions = cache.get(text);
 
 	if (cachedDimensions) {
+		cache.delete(text);
+		cache.set(text, cachedDimensions);
 		return cachedDimensions;
 	}
 
@@ -25,8 +29,16 @@ const measureText = (text: string): Output => {
 	const height = text.split('\n').length;
 	const dimensions = {width, height};
 	cache.set(text, dimensions);
+	if (cache.size > MEASURE_TEXT_CACHE_MAX) {
+		const oldestKey = cache.keys().next().value;
+		if (oldestKey !== undefined) {
+			cache.delete(oldestKey);
+		}
+	}
 
 	return dimensions;
 };
+
+export const getMeasureTextCacheSize = (): number => cache.size;
 
 export default measureText;

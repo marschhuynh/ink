@@ -36,6 +36,8 @@ export type {BoxMetrics, UseBoxMetricsResult} from './hooks/use-box-metrics.js';
 export {default as useBoxMetrics} from './hooks/use-box-metrics.js';
 export type {CursorPosition} from './log-update.js';
 export {default as measureElement} from './measure-element.js';
+export type {InkCacheSizes} from './diagnostics.js';
+export {getInkCacheSizes} from './diagnostics.js';
 export type {DOMElement} from './dom.js';
 export {kittyFlags, kittyModifiers} from './kitty-keyboard.js';
 export type {KittyKeyboardOptions, KittyFlagName} from './kitty-keyboard.js';

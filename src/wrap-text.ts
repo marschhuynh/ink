@@ -2,17 +2,21 @@ import wrapAnsi from 'wrap-ansi';
 import cliTruncate from 'cli-truncate';
 import {type Styles} from './styles.js';
 
-const cache: Record<string, string> = {};
+export const WRAP_TEXT_CACHE_MAX = 256;
+
+const cache = new Map<string, string>();
 
 const wrapText = (
 	text: string,
 	maxWidth: number,
 	wrapType: Styles['textWrap'],
 ): string => {
-	const cacheKey = text + String(maxWidth) + String(wrapType);
-	const cachedText = cache[cacheKey];
+	const cacheKey = JSON.stringify([text, maxWidth, wrapType]);
+	const cachedText = cache.get(cacheKey);
 
 	if (cachedText) {
+		cache.delete(cacheKey);
+		cache.set(cacheKey, cachedText);
 		return cachedText;
 	}
 
@@ -47,9 +51,17 @@ const wrapText = (
 		wrappedText = cliTruncate(text, maxWidth, {position});
 	}
 
-	cache[cacheKey] = wrappedText;
+	cache.set(cacheKey, wrappedText);
+	if (cache.size > WRAP_TEXT_CACHE_MAX) {
+		const oldestKey = cache.keys().next().value;
+		if (oldestKey !== undefined) {
+			cache.delete(oldestKey);
+		}
+	}
 
 	return wrappedText;
 };
+
+export const getWrapTextCacheSize = (): number => cache.size;
 
 export default wrapText;

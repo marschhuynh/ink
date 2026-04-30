@@ -206,6 +206,16 @@ Performance metrics for a render operation.
 */
 export type RenderMetrics = {
 	/**
+	Number of terminal rows in the rendered frame.
+	*/
+	outputHeight: number;
+
+	/**
+	Number of UTF-16 code units in the rendered frame string.
+	*/
+	outputLength: number;
+
+	/**
 	Time spent rendering in milliseconds.
 	*/
 	renderTime: number;
@@ -535,7 +545,11 @@ export default class Ink {
 			this.isScreenReaderEnabled,
 		);
 
-		this.options.onRender?.({renderTime: performance.now() - startTime});
+		this.options.onRender?.({
+			outputHeight,
+			outputLength: output.length,
+			renderTime: performance.now() - startTime,
+		});
 
 		// If <Static> output isn't empty, it means new children have been added to it
 		const hasStaticOutput = staticOutput && staticOutput !== '\n';
