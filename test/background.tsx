@@ -28,6 +28,9 @@ const ansi = {
 	bgBlue: '\u001B[44m',
 	bgMagenta: '\u001B[45m',
 	bgCyan: '\u001B[46m',
+	bgRedBright: '\u001B[101m',
+	bgBlueBright: '\u001B[104m',
+	bgWhiteBright: '\u001B[107m',
 
 	// Hex/RGB colors (24-bit)
 	bgHexRed: '\u001B[48;2;255;0;0m', // #FF0000 or rgb(255,0,0)
@@ -460,4 +463,57 @@ test('Text-only backgroundColor colors text content but does not fill Box width'
 		output,
 		`${ansi.bgRed}Hello ${ansi.bgReset}\n${ansi.bgRed}World!!${ansi.bgReset}`,
 	);
+});
+
+test('Box backgroundColor preserves styled trailing spaces', t => {
+	const output = renderToString(
+		<Box backgroundColor="red" width={10} alignSelf="flex-start">
+			<Text>Hi</Text>
+		</Box>,
+	);
+
+	t.is(output, `${ansi.bgRed}Hi        ${ansi.bgReset}`);
+});
+
+test('nested overflow clips to the tightest active bounds', t => {
+	const output = renderToString(
+		<Box width={4} height={1} overflow="hidden" alignSelf="flex-start">
+			<Box width={10} height={1} overflow="hidden" flexShrink={0}>
+				<Text>ABCDEFGHIJ</Text>
+			</Box>
+		</Box>,
+	);
+
+	t.is(output, 'ABCD');
+});
+
+test('sibling backgroundColor does not leak into following parent background rows', t => {
+	const output = renderToString(
+		<Box
+			backgroundColor="whiteBright"
+			width={8}
+			height={3}
+			flexDirection="column"
+		>
+			<Box backgroundColor="redBright" width={8} height={1} />
+			<Box height={1} />
+			<Box backgroundColor="blueBright" width={8} height={1} />
+		</Box>,
+	);
+
+	t.is(
+		output,
+		`${ansi.bgRedBright}        ${ansi.bgReset}\n${ansi.bgWhiteBright}        ${ansi.bgReset}\n${ansi.bgBlueBright}        ${ansi.bgReset}`,
+	);
+});
+
+test('full-width backgroundColor line does not write into the terminal wrap column', t => {
+	const output = renderToString(
+		<Box backgroundColor="redBright" width={8} height={1}>
+			<Text>Hi</Text>
+		</Box>,
+		{columns: 8},
+	);
+
+	t.is(output, `${ansi.bgRedBright}Hi     ${ansi.bgReset}`);
 });

@@ -42,14 +42,21 @@ const renderBorder = (
 			node.style.borderRightColor ?? node.style.borderColor;
 
 		const topBorderBackgroundColor =
-			node.style.borderTopBackgroundColor ?? node.style.borderBackgroundColor;
+			node.style.borderTopBackgroundColor ??
+			node.style.borderBackgroundColor ??
+			node.style.backgroundColor;
 		const bottomBorderBackgroundColor =
 			node.style.borderBottomBackgroundColor ??
-			node.style.borderBackgroundColor;
+			node.style.borderBackgroundColor ??
+			node.style.backgroundColor;
 		const leftBorderBackgroundColor =
-			node.style.borderLeftBackgroundColor ?? node.style.borderBackgroundColor;
+			node.style.borderLeftBackgroundColor ??
+			node.style.borderBackgroundColor ??
+			node.style.backgroundColor;
 		const rightBorderBackgroundColor =
-			node.style.borderRightBackgroundColor ?? node.style.borderBackgroundColor;
+			node.style.borderRightBackgroundColor ??
+			node.style.borderBackgroundColor ??
+			node.style.backgroundColor;
 
 		const dimTopBorderColor =
 			node.style.borderTopDimColor ?? node.style.borderDimColor;

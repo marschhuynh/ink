@@ -117,6 +117,25 @@ test('vertical border background does not bleed into content rows', t => {
 	}
 });
 
+test('border uses box background color when borderBackgroundColor is omitted', t => {
+	const output = renderToString(
+		<Box
+			backgroundColor="redBright"
+			borderStyle="round"
+			borderColor="cyan"
+			width={6}
+			height={3}
+		>
+			<Text>Hi</Text>
+		</Box>,
+	);
+
+	const topBorder = output.split('\n')[0]!;
+
+	t.true(topBorder.includes('\u001B[101m'));
+	t.true(topBorder.includes('\u001B[36m'));
+});
+
 test('foreground, background and dim combine correctly', t => {
 	const output = renderToString(
 		<Box
