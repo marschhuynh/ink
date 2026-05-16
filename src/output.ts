@@ -47,6 +47,82 @@ type UnclipOperation = {
 	type: 'unclip';
 };
 
+const maxDefined = (
+	first: number | undefined,
+	second: number | undefined,
+): number | undefined => {
+	if (first === undefined) {
+		return second;
+	}
+
+	if (second === undefined) {
+		return first;
+	}
+
+	return Math.max(first, second);
+};
+
+const minDefined = (
+	first: number | undefined,
+	second: number | undefined,
+): number | undefined => {
+	if (first === undefined) {
+		return second;
+	}
+
+	if (second === undefined) {
+		return first;
+	}
+
+	return Math.min(first, second);
+};
+
+const intersectClips = (clips: Clip[]): Clip | undefined => {
+	if (clips.length === 0) {
+		return;
+	}
+
+	let result: Clip = {
+		x1: undefined,
+		x2: undefined,
+		y1: undefined,
+		y2: undefined,
+	};
+
+	for (const clip of clips) {
+		result = {
+			x1: maxDefined(result.x1, clip.x1),
+			x2: minDefined(result.x2, clip.x2),
+			y1: maxDefined(result.y1, clip.y1),
+			y2: minDefined(result.y2, clip.y2),
+		};
+	}
+
+	return result;
+};
+
+const trimTrailingSpaces = (
+	line: StyledChar[],
+	width: number,
+): StyledChar[] => {
+	let end = line.length;
+
+	while (end > 0) {
+		const character = line[end - 1];
+		if (character?.type !== 'char' || character.value !== ' ') {
+			break;
+		}
+
+		if (character.styles.length > 0 && end < width) {
+			break;
+		}
+
+		end--;
+	}
+
+	return line.slice(0, end);
+};
+
 class OutputCaches {
 	widths = new Map<string, number>();
 	blockWidths = new Map<string, number>();
@@ -171,7 +247,7 @@ export default class Output {
 				let {x, y} = operation;
 				let lines = text.split('\n');
 
-				const clip = clips.at(-1);
+				const clip = intersectClips(clips);
 
 				if (clip) {
 					const clipHorizontally =
@@ -306,8 +382,12 @@ export default class Output {
 			.map(line => {
 				// See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
 				const lineWithoutEmptyItems = line.filter(item => item !== undefined);
+				const trimmedLine = trimTrailingSpaces(
+					lineWithoutEmptyItems,
+					this.width,
+				);
 
-				return styledCharsToString(lineWithoutEmptyItems).trimEnd();
+				return styledCharsToString(trimmedLine);
 			})
 			.join('\n');
 
