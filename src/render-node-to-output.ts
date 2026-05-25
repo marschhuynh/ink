@@ -334,6 +334,9 @@ const renderNodeToOutput = (
 		let clipped = false;
 
 		if (node.nodeName === 'ink-box') {
+			renderBackground(x, y, node, output);
+			renderBorder(x, y, node, output);
+
 			const clipHorizontally =
 				node.style.overflowX === 'hidden' ||
 				node.style.overflow === 'hidden' ||
@@ -370,8 +373,6 @@ const renderNodeToOutput = (
 				clipped = true;
 			}
 
-			renderBackground(x, y, node, output);
-			renderBorder(x, y, node, output);
 		}
 
 		if (node.nodeName === 'ink-root' || node.nodeName === 'ink-box') {
