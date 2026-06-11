@@ -39,5 +39,18 @@ export {default as measureElement} from './measure-element.js';
 export type {InkCacheSizes} from './diagnostics.js';
 export {getInkCacheSizes} from './diagnostics.js';
 export type {DOMElement} from './dom.js';
+export type {
+	TextSelectionPoint,
+	TextSelectionSpan,
+	SelectionRow,
+} from './text-selection.js';
+export type {
+	SelectionViewport,
+	TextSelectionActions,
+	TextSelectionHandle,
+	TextSelectionSnapshot,
+} from './text-selection-controller.js';
+export {default as useTextSelection} from './hooks/use-text-selection.js';
+export {default as useTextSelectionActions} from './hooks/use-text-selection-actions.js';
 export {kittyFlags, kittyModifiers} from './kitty-keyboard.js';
 export type {KittyKeyboardOptions, KittyFlagName} from './kitty-keyboard.js';

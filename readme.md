@@ -2527,6 +2527,52 @@ Type: `() => void`
 
 Resets `frame`, `time`, and `delta` to `0` and restarts timing from the current moment. Useful for one-shot animations triggered by events.
 
+### useTextSelection()
+
+A React hook exposing the instance-owned text selection: the currently selected terminal text plus actions to drive a selection programmatically. Ink paints the highlight as a final overlay on the rendered output and recomputes `text` as rows render.
+
+Selection is **Text-only**: only cells written by `<Text>` components are highlighted and extracted. Box borders, backgrounds, and padding/margin gaps are never part of a selection. Mark chrome text (icons, line-number gutters, diff markers) with `<Text selectable={false}>` to exclude it too — extraction drops chrome at the edges of a line and collapses interior chrome gaps to a single space.
+
+```jsx
+import {Text, useTextSelection} from 'ink';
+
+const SelectionFooter = () => {
+	const selection = useTextSelection();
+
+	return <Text dimColor>{selection.isEmpty ? 'no selection' : selection.text}</Text>;
+};
+```
+
+This hook is mouse-agnostic; mouse-driven selection (click-and-drag, edge auto-scroll) is provided by `useMouseTextSelection()` in `@nuvin/ink-input`, which drives these same actions.
+
+When a component only needs to *drive* the selection (mouse bridges, key handlers that clear it), use `useTextSelectionActions()` instead: it returns the same actions plus an imperative `getSnapshot()` but never subscribes, so the host component does not re-render on selection changes. Reserve `useTextSelection()` for components that display selection state.
+
+#### Return value
+
+- `anchor` / `focus` — `{x, y} | null` in **content space**: `x` is cells from the selection container's left edge, `y` is the content row index (survives scrolling).
+- `isDragging` — `boolean`, true between `start()` and `finish()`.
+- `text` — `string`, the selected text. Blank lines inside the selection are preserved; trailing whitespace is not selectable.
+- `isEmpty` — `boolean`, true when no text is selected.
+- `start(screenPoint)` / `update(screenPoint)` — begin/extend a selection. Points are 0-based **screen cells** on the Ink output grid; the registered viewport provider converts them to content space.
+- `finish()` — end the drag; the selected text stays available (and is frozen — if content reflows underneath a finished selection, it auto-clears rather than silently changing).
+- `clear()` — clear the selection and its row cache.
+- `setViewportProvider(fn)` — register a function returning `{top, left, width, height, scrollY}` for the selection container (in output grid cells, `scrollY` in rendered rows). Return `null`, or pass `null`, to treat the whole output grid as the viewport.
+
+#### `<Text selectable>`
+
+Type: `boolean`\
+Default: `true`
+
+When `false`, the text is never highlighted and never appears in extracted selection text. Note that nested `<Text>` squashes into its outermost `<Text>` ancestor's write, so `selectable` must be set on the outermost text element (use sibling `<Text>` elements in a `<Box>` to mix chrome and content on one line).
+
+#### Known limits
+
+- Mouse-to-grid mapping (in `useMouseTextSelection`) assumes the Ink output starts at terminal cell (1,1) — i.e. fullscreen/alternate-screen apps.
+- The selection container must not be nested inside another scroll container (`getBounds()` ignores ancestor scroll offsets).
+- A Text node's own padding cells count as selectable.
+- Horizontal scrolling containers are not supported.
+- Clipboard integration is app-owned: read `useTextSelection().text` and apply your own copy policy.
+
 ## API
 
 #### render(tree, options?)

@@ -62,6 +62,15 @@ export type Props = {
 	*/
 	readonly wrap?: Styles['textWrap'];
 
+	/**
+	Whether this text participates in mouse text selection. Set to `false` on
+	chrome text (icons, line-number gutters, diff markers) so it is never
+	highlighted and never appears in extracted selection text.
+
+	@default true
+	*/
+	readonly selectable?: boolean;
+
 	readonly children?: ReactNode;
 };
 
@@ -78,6 +87,7 @@ export default function Text({
 	strikethrough = false,
 	inverse = false,
 	wrap = 'wrap',
+	selectable = true,
 	children,
 	'aria-label': ariaLabel,
 	'aria-hidden': ariaHidden = false,
@@ -138,6 +148,7 @@ export default function Text({
 		<ink-text
 			style={{flexGrow: 0, flexShrink: 1, flexDirection: 'row', textWrap: wrap}}
 			internal_transform={transform}
+			internal_selectable={selectable}
 		>
 			{childrenOrAriaLabel}
 		</ink-text>

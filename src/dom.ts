@@ -29,6 +29,9 @@ export type DOMElement = {
 	attributes: Record<string, DOMNodeAttribute>;
 	childNodes: DOMNode[];
 	internal_transform?: OutputTransformer;
+	// Whether this Text node's cells participate in text selection.
+	// Undefined means selectable; false marks chrome (icons, gutters, markers).
+	internal_selectable?: boolean;
 
 	internal_accessibility?: {
 		role?:

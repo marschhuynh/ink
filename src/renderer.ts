@@ -2,6 +2,8 @@ import renderNodeToOutput, {
 	renderNodeToScreenReaderOutput,
 } from './render-node-to-output.js';
 import Output from './output.js';
+import {paintSelection} from './paint-selection.js';
+import {type TextSelectionController} from './text-selection-controller.js';
 import {type DOMElement} from './dom.js';
 
 type Result = {
@@ -10,7 +12,11 @@ type Result = {
 	staticOutput: string;
 };
 
-const renderer = (node: DOMElement, isScreenReaderEnabled: boolean): Result => {
+const renderer = (
+	node: DOMElement,
+	isScreenReaderEnabled: boolean,
+	selection?: TextSelectionController,
+): Result => {
 	if (node.yogaNode) {
 		if (isScreenReaderEnabled) {
 			const output = renderNodeToScreenReaderOutput(node, {
@@ -56,7 +62,23 @@ const renderer = (node: DOMElement, isScreenReaderEnabled: boolean): Result => {
 			});
 		}
 
-		const {output: generatedOutput, height: outputHeight} = output.get();
+		// Selection applies to the main output only; static output is written
+		// once and must never contain highlight styling.
+		const {output: generatedOutput, height: outputHeight} = output.get(
+			selection
+				? {
+						capturePlainRows: true,
+						paint(grid, plainRows, maskRows) {
+							selection.captureRows(plainRows, maskRows);
+							paintSelection(
+								grid,
+								selection.getPaintSpans(grid[0]?.length ?? 0, grid.length),
+								maskRows,
+							);
+						},
+					}
+				: undefined,
+		);
 
 		return {
 			output: generatedOutput,

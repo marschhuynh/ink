@@ -223,6 +223,11 @@ export default createReconciler<
 				continue;
 			}
 
+			if (key === 'internal_selectable') {
+				node.internal_selectable = value as boolean;
+				continue;
+			}
+
 			if (key === 'internal_static') {
 				currentRootNode = rootNode;
 				node.internal_static = true;
@@ -324,6 +329,11 @@ export default createReconciler<
 
 				if (key === 'internal_transform') {
 					node.internal_transform = value as OutputTransformer;
+					continue;
+				}
+
+				if (key === 'internal_selectable') {
+					node.internal_selectable = value as boolean;
 					continue;
 				}
 

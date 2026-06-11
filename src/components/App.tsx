@@ -11,6 +11,7 @@ import React, {
 import cliCursor from 'cli-cursor';
 import {type CursorPosition} from '../log-update.js';
 import {createInputParser} from '../input-parser.js';
+import {type TextSelectionController} from '../text-selection-controller.js';
 import AppContext from './AppContext.js';
 import StdinContext from './StdinContext.js';
 import StdoutContext from './StdoutContext.js';
@@ -18,6 +19,7 @@ import StderrContext from './StderrContext.js';
 import FocusContext from './FocusContext.js';
 import AnimationContext from './AnimationContext.js';
 import CursorContext from './CursorContext.js';
+import {textSelectionContext as TextSelectionContext} from './TextSelectionContext.js';
 import ErrorBoundary from './ErrorBoundary.js';
 
 const tab = '\t';
@@ -44,6 +46,7 @@ type Props = {
 	readonly setCursorPosition: (position: CursorPosition | undefined) => void;
 	readonly interactive: boolean;
 	readonly renderThrottleMs: number;
+	readonly textSelection?: TextSelectionController;
 };
 
 type Focusable = {
@@ -67,6 +70,7 @@ function App({
 	setCursorPosition,
 	interactive,
 	renderThrottleMs,
+	textSelection,
 }: Props): React.ReactNode {
 	const [isFocusEnabled, setIsFocusEnabled] = useState(true);
 	const [activeFocusId, setActiveFocusId] = useState<string | undefined>(
@@ -690,7 +694,11 @@ function App({
 						<FocusContext.Provider value={focusContextValue}>
 							<AnimationContext.Provider value={animationContextValue}>
 								<CursorContext.Provider value={cursorContextValue}>
-									<ErrorBoundary onError={handleExit}>{children}</ErrorBoundary>
+									<TextSelectionContext.Provider value={textSelection}>
+										<ErrorBoundary onError={handleExit}>
+											{children}
+										</ErrorBoundary>
+									</TextSelectionContext.Provider>
 								</CursorContext.Provider>
 							</AnimationContext.Provider>
 						</FocusContext.Provider>
