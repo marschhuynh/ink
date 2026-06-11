@@ -166,7 +166,10 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 					typeof child.internal_transform === 'function'
 						? [child.internal_transform, ...newTransformers]
 						: newTransformers;
-				output.write(childX, childY, text, {transformers: childTransformers});
+				output.write(childX, childY, text, {
+					transformers: childTransformers,
+					selectable: child.internal_selectable !== false,
+				});
 			}
 		} else if (child.nodeName === 'ink-box') {
 			const childX = x + childYoga.getComputedLeft();
@@ -312,7 +315,10 @@ const renderNodeToOutput = (
 
 				text = applyPaddingToText(node, text);
 
-				output.write(x, y, text, {transformers: newTransformers});
+				output.write(x, y, text, {
+					transformers: newTransformers,
+					selectable: node.internal_selectable !== false,
+				});
 			}
 
 			return;
@@ -372,7 +378,6 @@ const renderNodeToOutput = (
 				output.clip({x1, x2, y1, y2});
 				clipped = true;
 			}
-
 		}
 
 		if (node.nodeName === 'ink-root' || node.nodeName === 'ink-box') {

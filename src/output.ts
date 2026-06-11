@@ -29,6 +29,7 @@ type WriteOperation = {
 	y: number;
 	text: string;
 	transformers: OutputTransformer[];
+	selectable: boolean;
 };
 
 type ClipOperation = {
@@ -45,6 +46,15 @@ type Clip = {
 
 type UnclipOperation = {
 	type: 'unclip';
+};
+
+type GetOptions = {
+	capturePlainRows?: boolean;
+	paint?: (
+		grid: StyledChar[][],
+		plainRows: string[],
+		maskRows: boolean[][],
+	) => void;
 };
 
 const maxDefined = (
@@ -182,9 +192,9 @@ export default class Output {
 		x: number,
 		y: number,
 		text: string,
-		options: {transformers: OutputTransformer[]},
+		options: {transformers: OutputTransformer[]; selectable?: boolean},
 	): void {
-		const {transformers} = options;
+		const {transformers, selectable = false} = options;
 
 		if (!text) {
 			return;
@@ -196,6 +206,7 @@ export default class Output {
 			y,
 			text,
 			transformers,
+			selectable,
 		});
 	}
 
@@ -212,12 +223,21 @@ export default class Output {
 		});
 	}
 
-	get(): {output: string; height: number} {
+	get(options?: GetOptions): {
+		output: string;
+		height: number;
+		plainRows?: string[];
+		maskRows?: boolean[][];
+	} {
 		// Initialize output array with a specific set of rows, so that margin/padding at the bottom is preserved
 		const output: StyledChar[][] = [];
+		// Selectability mask: true only for cells written with `selectable: true`
+		// (i.e. Text content). Padding, margin, borders, and untouched cells stay false.
+		const mask: boolean[][] = [];
 
 		for (let y = 0; y < this.height; y++) {
 			const row: StyledChar[] = [];
+			const maskRow: boolean[] = [];
 
 			for (let x = 0; x < this.width; x++) {
 				row.push({
@@ -226,9 +246,11 @@ export default class Output {
 					fullWidth: false,
 					styles: [],
 				});
+				maskRow.push(false);
 			}
 
 			output.push(row);
+			mask.push(maskRow);
 		}
 
 		const clips: Clip[] = [];
@@ -243,7 +265,7 @@ export default class Output {
 			}
 
 			if (operation.type === 'write') {
-				const {text, transformers} = operation;
+				const {text, transformers, selectable} = operation;
 				let {x, y} = operation;
 				let lines = text.split('\n');
 
@@ -305,9 +327,10 @@ export default class Output {
 
 				for (let [index, line] of lines.entries()) {
 					const currentLine = output[y + offsetY];
+					const currentMaskLine = mask[y + offsetY];
 
 					// Line can be missing if `text` is taller than height of pre-initialized `this.output`
-					if (!currentLine) {
+					if (!currentLine || !currentMaskLine) {
 						continue;
 					}
 
@@ -343,10 +366,12 @@ export default class Output {
 							1
 					) {
 						currentLine[offsetX - 1] = spaceCell;
+						currentMaskLine[offsetX - 1] = false;
 					}
 
 					for (const character of characters) {
 						currentLine[offsetX] = character;
+						currentMaskLine[offsetX] = selectable;
 
 						// Determine printed width using string-width to align with measurement
 						const characterWidth = Math.max(
@@ -363,6 +388,8 @@ export default class Output {
 									fullWidth: false,
 									styles: character.styles,
 								};
+								// Placeholder cells inherit the glyph's selectability.
+								currentMaskLine[offsetX + index] = selectable;
 							}
 						}
 
@@ -371,12 +398,30 @@ export default class Output {
 
 					if (currentLine[offsetX]?.value === '') {
 						currentLine[offsetX] = spaceCell;
+						currentMaskLine[offsetX] = false;
 					}
 
 					offsetY++;
 				}
 			}
 		}
+
+		let plainRows: string[] | undefined;
+
+		if (options?.capturePlainRows ?? options?.paint) {
+			plainRows = output.map(row =>
+				row
+					.filter(item => item !== undefined)
+					.map(item => item.value)
+					.join('')
+					.trimEnd(),
+			);
+		}
+
+		// Generic final mutation point: sees the fully built grid (after
+		// wrapping, transforms, borders, backgrounds, and scroll clipping)
+		// before it is converted to ANSI.
+		options?.paint?.(output, plainRows!, mask);
 
 		const generatedOutput = output
 			.map(line => {
@@ -394,6 +439,9 @@ export default class Output {
 		return {
 			output: generatedOutput,
 			height: output.length,
+			plainRows,
+			maskRows:
+				(options?.capturePlainRows ?? options?.paint) ? mask : undefined,
 		};
 	}
 }

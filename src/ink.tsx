@@ -18,6 +18,7 @@ import {hideCursorEscape, showCursorEscape} from './cursor-helpers.js';
 import logUpdate, {type LogUpdate, type CursorPosition} from './log-update.js';
 import {bsu, esu, shouldSynchronize} from './write-synchronized.js';
 import instances from './instances.js';
+import {TextSelectionController} from './text-selection-controller.js';
 import App from './components/App.js';
 import {accessibilityContext as AccessibilityContext} from './components/AccessibilityContext.js';
 import {
@@ -325,11 +326,19 @@ export default class Ink {
 	private kittyProtocolEnabled = false;
 	private cancelKittyDetection?: () => void;
 	private nextRenderCommit?: {promise: Promise<void>; resolve: () => void};
+	private readonly textSelection: TextSelectionController;
 
 	constructor(options: Options) {
 		autoBind(this);
 
 		this.options = options;
+		this.textSelection = new TextSelectionController();
+		// Selection changes repaint through the same (throttled) path as React
+		// renders; layout is unchanged, so no calculateLayout is needed.
+		this.textSelection.onInvalidate = () => {
+			this.rootNode.onRender?.();
+		};
+
 		this.rootNode = dom.createNode('ink-root');
 		this.rootNode.onComputeLayout = this.calculateLayout;
 
@@ -543,6 +552,8 @@ export default class Ink {
 		const {output, outputHeight, staticOutput} = render(
 			this.rootNode,
 			this.isScreenReaderEnabled,
+			// Screen-reader rendering bypasses Output, so selection is skipped.
+			this.isScreenReaderEnabled ? undefined : this.textSelection,
 		);
 
 		this.options.onRender?.({
@@ -658,6 +669,7 @@ export default class Ink {
 					writeToStdout={this.writeToStdout}
 					writeToStderr={this.writeToStderr}
 					setCursorPosition={this.setCursorPosition}
+					textSelection={this.textSelection}
 					onExit={this.handleAppExit}
 					onWaitUntilRenderFlush={this.waitUntilRenderFlush}
 				>
