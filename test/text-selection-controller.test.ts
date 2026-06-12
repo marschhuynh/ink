@@ -180,3 +180,64 @@ test('getPaintSpans drops rows scrolled outside the viewport', t => {
 	scrollY = 3; // Anchor row now 3 rows above the viewport
 	t.deepEqual(controller.getPaintSpans(16, 1), []);
 });
+
+test('viewport providers stack: the last registered wins, unregister restores', t => {
+	const controller = new TextSelectionController();
+	const listViewport = {top: 0, left: 0, width: 10, height: 2, scrollY: 5};
+	const modalViewport = {top: 1, left: 2, width: 8, height: 1, scrollY: 0};
+
+	const unregisterList = controller.registerViewportProvider(
+		() => listViewport,
+	);
+	controller.captureRows(['row-a', 'row-b']);
+	controller.start({x: 0, y: 0});
+	// List provider active: content y = screen y - top + scrollY = 5.
+	t.deepEqual(controller.getSnapshot().anchor, {x: 0, y: 5});
+
+	// A modal mounts its own selection area on top; the live selection is
+	// cleared because its coordinate space is gone.
+	const unregisterModal = controller.registerViewportProvider(
+		() => modalViewport,
+	);
+	t.is(controller.getSnapshot().anchor, null);
+
+	controller.captureRows(['', '  modal-row']);
+	controller.start({x: 2, y: 1});
+	// Modal provider active: content {x: 0, y: 0} relative to the modal.
+	t.deepEqual(controller.getSnapshot().anchor, {x: 0, y: 0});
+	controller.update({x: 9, y: 1});
+	t.is(controller.getSnapshot().text, 'modal-r'); // Focus column is exclusive
+	controller.clear();
+
+	// Modal closes: the list's provider is active again.
+	unregisterModal();
+	controller.captureRows(['row-a', 'row-b']);
+	controller.start({x: 0, y: 0});
+	t.deepEqual(controller.getSnapshot().anchor, {x: 0, y: 5});
+
+	// Removing the last provider falls back to the full grid.
+	unregisterList();
+	controller.captureRows(['grid-row']);
+	controller.start({x: 0, y: 0});
+	t.deepEqual(controller.getSnapshot().anchor, {x: 0, y: 0});
+});
+
+test('unregistering a stacked provider clears a live selection', t => {
+	const controller = new TextSelectionController();
+	const unregister = controller.registerViewportProvider(() => ({
+		top: 0,
+		left: 0,
+		width: 10,
+		height: 1,
+		scrollY: 0,
+	}));
+	controller.captureRows(['hello']);
+	controller.start({x: 0, y: 0});
+	controller.update({x: 5, y: 0});
+	controller.finish();
+	t.is(controller.getSnapshot().text, 'hello');
+
+	unregister();
+	t.is(controller.getSnapshot().text, '');
+	t.is(controller.getSnapshot().anchor, null);
+});

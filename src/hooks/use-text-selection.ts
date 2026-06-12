@@ -31,6 +31,7 @@ export default function useTextSelection(): TextSelectionSnapshot &
 			update: controller.update,
 			finish: controller.finish,
 			clear: controller.clear,
+			registerViewportProvider: controller.registerViewportProvider,
 			setViewportProvider: controller.setViewportProvider,
 		}),
 		[controller],

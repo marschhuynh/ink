@@ -2556,7 +2556,8 @@ When a component only needs to *drive* the selection (mouse bridges, key handler
 - `start(screenPoint)` / `update(screenPoint)` — begin/extend a selection. Points are 0-based **screen cells** on the Ink output grid; the registered viewport provider converts them to content space.
 - `finish()` — end the drag; the selected text stays available (and is frozen — if content reflows underneath a finished selection, it auto-clears rather than silently changing).
 - `clear()` — clear the selection and its row cache.
-- `setViewportProvider(fn)` — register a function returning `{top, left, width, height, scrollY}` for the selection container (in output grid cells, `scrollY` in rendered rows). Return `null`, or pass `null`, to treat the whole output grid as the viewport.
+- `registerViewportProvider(fn)` — register a function returning `{top, left, width, height, scrollY}` for the selection container (in output grid cells, `scrollY` in rendered rows). Providers stack: the most recently registered one is active (e.g. a modal's selection area over the main list's); the returned unregister function restores the previous provider. Registering or unregistering clears any live selection (its coordinate space changed). The provider returning `null` means "bounds not measurable this frame" and the frame is skipped. With no provider registered, the whole output grid is the viewport.
+- `setViewportProvider(fn | null)` — single-slot convenience over `registerViewportProvider`: replaces the provider set by the previous call (`null` unregisters it). Prefer `registerViewportProvider` where selection areas can overlap (overlays, modals).
 
 #### `<Text selectable>`
 
