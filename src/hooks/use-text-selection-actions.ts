@@ -23,6 +23,7 @@ export default function useTextSelectionActions(): TextSelectionHandle {
 			update: controller.update,
 			finish: controller.finish,
 			clear: controller.clear,
+			registerViewportProvider: controller.registerViewportProvider,
 			setViewportProvider: controller.setViewportProvider,
 			getSnapshot: controller.getSnapshot,
 		}),

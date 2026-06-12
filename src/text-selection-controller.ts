@@ -41,8 +41,18 @@ export type TextSelectionActions = {
 	finish: () => void;
 	clear: () => void;
 	/**
-	Registered by the mouse bridge. Returning null means "no scroll container":
-	the whole output grid is the viewport with scrollY = 0.
+	Registered by the mouse bridge. Providers stack: the most recently
+	registered one is active (e.g. a modal's selection area over the main
+	list's), and the returned unregister function restores the previous one.
+	A provider returning null means "bounds not measurable this frame".
+	*/
+	registerViewportProvider: (
+		provider: () => SelectionViewport | null,
+	) => () => void;
+	/**
+	Single-slot convenience over registerViewportProvider: replaces the
+	provider set by the previous call (null unregisters it). Prefer
+	registerViewportProvider where mounts can overlap.
 	*/
 	setViewportProvider: (
 		provider: (() => SelectionViewport | null) | null,
@@ -81,7 +91,13 @@ export class TextSelectionController {
 	private isDragging = false;
 	private text = '';
 	private readonly rowCache = new Map<number, SelectionRow>();
-	private viewportProvider: (() => SelectionViewport | null) | null = null;
+	// Stack of registered providers; the last entry is active. Stacking lets
+	// an overlay (tool detail modal) take over selection while mounted and
+	// hand coordinates back to the underlying list on unmount.
+	private readonly viewportProviders: Array<() => SelectionViewport | null> =
+		[];
+
+	private legacyProviderUnregister: (() => void) | null = null;
 	// Last viewport a registered provider returned. Reused for one-frame gaps
 	// where the provider returns null (e.g. bounds momentarily 0 mid-re-render),
 	// so the highlight doesn't flash to full-grid coordinates and the frozen
@@ -111,10 +127,39 @@ export class TextSelectionController {
 		return this.snapshot;
 	};
 
+	registerViewportProvider = (
+		provider: () => SelectionViewport | null,
+	): (() => void) => {
+		this.viewportProviders.push(provider);
+		// The coordinate space changed under any live selection; drop it
+		// rather than paint it through the wrong viewport, and forget the
+		// previous provider's cached viewport.
+		this.lastViewport = null;
+		if (this.anchor !== null) {
+			this.clear();
+		}
+
+		return () => {
+			const index = this.viewportProviders.indexOf(provider);
+			if (index === -1) {
+				return;
+			}
+
+			this.viewportProviders.splice(index, 1);
+			this.lastViewport = null;
+			if (this.anchor !== null) {
+				this.clear();
+			}
+		};
+	};
+
 	setViewportProvider = (
 		provider: (() => SelectionViewport | null) | null,
 	): void => {
-		this.viewportProvider = provider;
+		this.legacyProviderUnregister?.();
+		this.legacyProviderUnregister = provider
+			? this.registerViewportProvider(provider)
+			: null;
 	};
 
 	start = (screenPoint: {x: number; y: number}): void => {
@@ -314,12 +359,13 @@ export class TextSelectionController {
 		viewport: SelectionViewport;
 		available: boolean;
 	} {
-		if (!this.viewportProvider) {
+		const provider = this.viewportProviders.at(-1);
+		if (!provider) {
 			// No scroll container: the whole grid is the viewport.
 			return {viewport: fullGridViewport, available: true};
 		}
 
-		const current = this.viewportProvider();
+		const current = provider();
 		if (current) {
 			this.lastViewport = current;
 			return {viewport: current, available: true};
