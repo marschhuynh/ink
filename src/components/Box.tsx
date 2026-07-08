@@ -193,6 +193,16 @@ const Box = forwardRef<BoxRef, PropsWithChildren<Props>>(
 					const width = yogaNode.getComputedWidth();
 					const height = yogaNode.getComputedHeight();
 
+					// A pinned `position: "sticky"` node is drawn away from its
+					// natural-flow position by `renderStickyNode`, which records the
+					// drawn rect on the element. Prefer it so hit-testing lands on the
+					// pinned copy. The live `position === 'sticky'` guard ensures a node
+					// that has since stopped being sticky never reads a stale rect.
+					const stickyRect = element.internal_stickyRect;
+					if (element.style.position === 'sticky' && stickyRect) {
+						return {x: stickyRect.x, y: stickyRect.y, width, height};
+					}
+
 					let parent = element.parentNode;
 					while (parent && 'yogaNode' in parent && parent.yogaNode) {
 						x += parent.yogaNode.getComputedLeft();
