@@ -75,6 +75,13 @@ export type DOMElement = {
 	internal_layoutListeners?: Set<LayoutListener>;
 	internal_scrollOffset?: {x: number; y: number};
 	internal_scrollVersion?: number;
+	// The absolute position at which a `position: "sticky"` node was last drawn
+	// by `renderStickyNode`. While pinned this differs from the natural
+	// (yoga-ancestor-walk) position; `getBounds` prefers it so hit-testing lands
+	// on the pinned copy. Refreshed every sticky render and cleared when the node
+	// renders invisibly; guarded in `getBounds` by a live `position === 'sticky'`
+	// check so a node that stops being sticky never reads a stale rect.
+	internal_stickyRect?: {x: number; y: number};
 } & InkNode;
 
 export type TextNode = {
