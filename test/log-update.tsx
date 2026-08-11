@@ -1,5 +1,6 @@
 import test from 'ava';
 import ansiEscapes from 'ansi-escapes';
+import {resetHistory} from 'sinon';
 import logUpdate from '../src/log-update.js';
 import createStdout from './helpers/create-stdout.js';
 
@@ -254,6 +255,152 @@ const createRenderForMode = (incremental: boolean) => {
 	return {stdout, render};
 };
 
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - changed output retains persistent committed cursor`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 2, y: 0});
+		render('Line 1\nLine 2\n');
+		render('Line 1\nUpdated\n');
+
+		const secondWrite = (stdout.write as any).secondCall.args[0] as string;
+		t.true(secondWrite.includes('Updated'));
+		t.true(secondWrite.endsWith(ansiEscapes.cursorTo(2) + showCursorEscape));
+	});
+
+	test(`${name} - explicit undefined clears persistent committed cursor`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 2, y: 0});
+		render('Line 1\nLine 2\n');
+		render.setCursorPosition(undefined);
+		render('Line 1\nUpdated\n');
+
+		const secondWrite = (stdout.write as any).secondCall.args[0] as string;
+		t.false(secondWrite.endsWith(showCursorEscape));
+	});
+
+	test(`${name} - clear preserves persistent committed cursor`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 2, y: 0});
+		render('Before\n');
+		render.clear();
+		resetHistory();
+		render('After\n');
+
+		const written = (stdout.write as any).firstCall.args[0] as string;
+		t.true(written.endsWith(ansiEscapes.cursorTo(2) + showCursorEscape));
+	});
+
+	test(`${name} - cache-only reset preserves persistent committed cursor`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+
+		render.setCursorPosition({x: 2, y: 0});
+		render('Before\n');
+		// The caller externally reset or replaced the terminal contents before reset().
+		render.reset();
+		resetHistory();
+		render('After\n');
+
+		const written = (stdout.write as any).firstCall.args[0] as string;
+		t.true(written.startsWith('After\n'));
+		t.false(written.startsWith(hideCursorEscape));
+		t.true(written.endsWith(ansiEscapes.cursorTo(2) + showCursorEscape));
+	});
+}
+
+for (const {name, incremental} of renderingModes) {
+	for (const {label, output, down} of [
+		{label: 'trailing newline', output: 'A\nB\n', down: 2},
+		{label: 'fullscreen', output: 'A\nB', down: 1},
+	] as const) {
+		test(`${name} - done() returns positioned cursor to bottom for ${label}`, t => {
+			const {stdout, render} = createRenderForMode(incremental);
+			render.setCursorPosition({x: 0, y: 0});
+			render(output);
+			resetHistory();
+
+			render.done();
+
+			t.is(
+				stdout.get(),
+				hideCursorEscape +
+					ansiEscapes.cursorDown(down) +
+					ansiEscapes.cursorTo(0) +
+					showCursorEscape,
+			);
+		});
+	}
+
+	test(`${name} - done() clears committed cursor before the next render`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+		render.setCursorPosition({x: 2, y: 0});
+		render('Before\n');
+		render.done();
+		resetHistory();
+
+		render('After\n');
+
+		const written = stdout.get();
+		t.false(written.endsWith(showCursorEscape));
+	});
+
+	for (const transition of ['clear', 'explicit cursor removal'] as const) {
+		test(`${name} - done() restores cursor visibility after ${transition}`, t => {
+			const {stdout, render} = createRenderForMode(incremental);
+			render.setCursorPosition({x: 2, y: 0});
+			render('Before\n');
+
+			if (transition === 'clear') {
+				render.clear();
+			} else {
+				render.setCursorPosition(undefined);
+				render('Before\n');
+			}
+
+			resetHistory();
+			render.done();
+
+			t.is(stdout.get(), showCursorEscape);
+		});
+	}
+}
+
+for (const {name, incremental} of renderingModes) {
+	for (const {label, output, suffix} of [
+		{
+			label: 'fullscreen',
+			output: 'A\nB',
+			suffix: ansiEscapes.cursorTo(0) + showCursorEscape,
+		},
+		{
+			label: 'trailing newline',
+			output: 'A\nB\n',
+			suffix:
+				ansiEscapes.cursorUp(1) + ansiEscapes.cursorTo(0) + showCursorEscape,
+		},
+	] as const) {
+		test(`${name} - full render uses physical baseline for ${label}`, t => {
+			const {stdout, render} = createRenderForMode(incremental);
+			render.setCursorPosition({x: 0, y: 1});
+			render(output);
+
+			const written = (stdout.write as any).firstCall.args[0] as string;
+			t.is(written, output + suffix);
+		});
+
+		test(`${name} - sync uses physical baseline for ${label}`, t => {
+			const {stdout, render} = createRenderForMode(incremental);
+			render.setCursorPosition({x: 0, y: 1});
+			render.sync(output);
+
+			const written = (stdout.write as any).firstCall.args[0] as string;
+			t.is(written, suffix);
+		});
+	}
+}
+
 test('standard rendering - positions cursor after output when cursorPosition is set', t => {
 	const stdout = createStdout();
 	const render = logUpdate.create(stdout, {showCursor: true});
@@ -433,21 +580,18 @@ test('standard rendering - returns to bottom before erase when cursor was positi
 });
 
 for (const {name, incremental} of renderingModes) {
-	test(`${name} - sync() resets cursor state`, t => {
+	test(`${name} - render after sync returns from synchronized cursor state`, t => {
 		const {stdout, render} = createRenderForMode(incremental);
 
 		render.setCursorPosition({x: 5, y: 0});
 		render('Line 1\nLine 2\nLine 3\n');
-
-		// Sync() simulates clearTerminal path: screen is fully reset
 		render.sync('Fresh output\n');
-
-		// Next render should NOT include hideCursor + cursorDown (return-to-bottom prefix)
-		// because sync() should have reset previousCursorPosition and cursorWasShown
+		resetHistory();
 		render('Updated output\n');
 
-		const afterSync = stdout.get();
-		t.false(afterSync.includes(hideCursorEscape));
+		const afterSync = (stdout.write as any).firstCall.args[0] as string;
+		t.true(afterSync.startsWith(hideCursorEscape));
+		t.true(afterSync.includes(ansiEscapes.cursorDown(1)));
 		t.false(afterSync.includes(ansiEscapes.cursorDown(3)));
 	});
 }
@@ -486,17 +630,20 @@ for (const {name, incremental} of renderingModes) {
 }
 
 for (const {name, incremental} of renderingModes) {
-	test(`${name} - sync() hides cursor when previous render showed cursor`, t => {
+	test(`${name} - sync() restores persistent committed cursor`, t => {
 		const {stdout, render} = createRenderForMode(incremental);
 
 		render.setCursorPosition({x: 5, y: 1});
 		render('Line 1\nLine 2\nLine 3\n');
 		t.is((stdout.write as any).callCount, 1);
 
-		render.sync('Fresh output\n');
+		render.sync('Fresh 1\nFresh 2\nFresh 3\n');
 
 		t.is((stdout.write as any).callCount, 2);
-		t.is((stdout.write as any).secondCall.args[0] as string, hideCursorEscape);
+		t.is(
+			(stdout.write as any).secondCall.args[0] as string,
+			ansiEscapes.cursorUp(2) + ansiEscapes.cursorTo(5) + showCursorEscape,
+		);
 	});
 }
 
@@ -510,6 +657,27 @@ test('standard rendering - sync() without cursor does not write to stream', t =>
 });
 
 // No-trailing-newline tests (fullscreen mode)
+
+test('incremental rendering - fullscreen surgical update uses physical cursor baseline', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render.setCursorPosition({x: 0, y: 1});
+	render('A\nB');
+	render.setCursorPosition({x: 0, y: 1});
+	render('A\nC');
+
+	const secondCall = (stdout.write as any).secondCall.args[0] as string;
+	t.true(secondCall.endsWith(ansiEscapes.cursorTo(0) + showCursorEscape));
+	t.false(
+		secondCall.endsWith(
+			ansiEscapes.cursorUp(1) + ansiEscapes.cursorTo(0) + showCursorEscape,
+		),
+	);
+});
 
 test('incremental rendering - no trailing newline: trailing to no-trailing transition', t => {
 	const stdout = createStdout();
@@ -620,4 +788,83 @@ test('incremental rendering - render to empty string (full clear vs early exit)'
 	// Rendering empty string again should be skipped (identical output)
 	render('\n');
 	t.is((stdout.write as any).callCount, 2); // No additional write
+});
+
+test('incremental rendering - repaint writes a complete frame and preserves surgical updates', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render.setCursorPosition({x: 2, y: 0});
+	render('Line 1\nLine 2\nLine 3\n');
+	resetHistory();
+
+	t.true(render.repaint('Line 1\nUpdated\n'));
+	t.is((stdout.write as any).callCount, 1);
+	const repaintWrite = (stdout.write as any).firstCall.args[0] as string;
+	t.true(
+		repaintWrite.startsWith(
+			hideCursorEscape +
+				ansiEscapes.cursorDown(3) +
+				ansiEscapes.cursorTo(0) +
+				ansiEscapes.eraseLines(4),
+		),
+	);
+	t.true(repaintWrite.includes('Line 1'));
+	t.true(repaintWrite.includes('Updated'));
+	t.true(
+		repaintWrite.endsWith(
+			ansiEscapes.cursorUp(2) + ansiEscapes.cursorTo(2) + showCursorEscape,
+		),
+	);
+
+	resetHistory();
+	render('Line 1\nFinal\n');
+
+	t.is((stdout.write as any).callCount, 1);
+	const incrementalWrite = (stdout.write as any).firstCall.args[0] as string;
+	t.false(incrementalWrite.includes('Line 1'));
+	t.true(incrementalWrite.includes('Final'));
+});
+
+test('incremental rendering - fullscreen repaint uses physical cursor baseline', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {
+		showCursor: true,
+		incremental: true,
+	});
+
+	render.setCursorPosition({x: 0, y: 1});
+	render('A\nB');
+	resetHistory();
+
+	t.true(render.repaint('A\nC'));
+	t.is((stdout.write as any).callCount, 1);
+	const repaintWrite = (stdout.write as any).firstCall.args[0] as string;
+	t.true(
+		repaintWrite.startsWith(
+			hideCursorEscape + ansiEscapes.cursorTo(0) + ansiEscapes.eraseLines(2),
+		),
+	);
+	const frame = 'A\nC';
+	const frameStart = repaintWrite.indexOf(frame);
+	t.true(frameStart >= 0);
+	t.is(
+		repaintWrite.slice(frameStart + frame.length),
+		ansiEscapes.cursorTo(0) + showCursorEscape,
+	);
+});
+
+test('standard rendering - repaint forces identical output', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {showCursor: true});
+
+	render('Same\n');
+	resetHistory();
+
+	t.true(render.repaint('Same\n'));
+	t.is((stdout.write as any).callCount, 1);
+	t.true(stdout.get().includes('Same'));
 });
