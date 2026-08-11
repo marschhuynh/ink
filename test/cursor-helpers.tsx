@@ -2,6 +2,7 @@ import test from 'ava';
 import ansiEscapes from 'ansi-escapes';
 import {
 	cursorPositionChanged,
+	getOutputCursorRow,
 	buildCursorSuffix,
 	buildReturnToBottom,
 	buildCursorOnlySequence,
@@ -35,6 +36,29 @@ test('cursorPositionChanged - undefined vs defined returns true', t => {
 });
 
 // BuildCursorSuffix
+
+test('getOutputCursorRow - trailing newline ends below visible output', t => {
+	t.is(getOutputCursorRow('A\nB\n'.split('\n')), 2);
+});
+
+test('getOutputCursorRow - fullscreen output ends on last visible row', t => {
+	t.is(getOutputCursorRow('A\nB'.split('\n')), 1);
+});
+
+test('buildCursorSuffix - fullscreen cursor stays on last visible row', t => {
+	const outputCursorRow = getOutputCursorRow('A\nB'.split('\n'));
+	const result = buildCursorSuffix(outputCursorRow, {x: 0, y: 1});
+	t.is(result, ansiEscapes.cursorTo(0) + showCursorEscape);
+});
+
+test('buildCursorSuffix - trailing newline moves up from empty baseline row', t => {
+	const outputCursorRow = getOutputCursorRow('A\nB\n'.split('\n'));
+	const result = buildCursorSuffix(outputCursorRow, {x: 0, y: 1});
+	t.is(
+		result,
+		ansiEscapes.cursorUp(1) + ansiEscapes.cursorTo(0) + showCursorEscape,
+	);
+});
 
 test('buildCursorSuffix - returns empty string when cursorPosition is undefined', t => {
 	t.is(buildCursorSuffix(3, undefined), '');
@@ -84,7 +108,7 @@ test('buildCursorOnlySequence - builds full sequence with hide prefix when curso
 		cursorWasShown: true,
 		previousLineCount: 2,
 		previousCursorPosition: {x: 0, y: 0},
-		visibleLineCount: 1,
+		outputCursorRow: 1,
 		cursorPosition: {x: 3, y: 0},
 	});
 	const expected =
@@ -99,7 +123,7 @@ test('buildCursorOnlySequence - no hide prefix when cursor was not shown', t => 
 		cursorWasShown: false,
 		previousLineCount: 0,
 		previousCursorPosition: undefined,
-		visibleLineCount: 1,
+		outputCursorRow: 1,
 		cursorPosition: {x: 3, y: 0},
 	});
 	t.false(result.startsWith(hideCursorEscape));

@@ -19,18 +19,24 @@ export const cursorPositionChanged = (
 ): boolean => a?.x !== b?.x || a?.y !== b?.y;
 
 /**
-Build escape sequence to move cursor from bottom of output to the target position and show it.
-Assumes cursor is at (col 0, line visibleLineCount) — i.e. just after the last output line.
+Return the zero-based terminal row occupied after writing output split into lines.
+A trailing newline contributes an empty final row; fullscreen output does not.
+*/
+export const getOutputCursorRow = (lines: readonly string[]): number =>
+	Math.max(0, lines.length - 1);
+
+/**
+Build escape sequence to move cursor from the physical post-write row to the target position and show it.
 */
 export const buildCursorSuffix = (
-	visibleLineCount: number,
+	outputCursorRow: number,
 	cursorPosition: CursorPosition | undefined,
 ): string => {
 	if (!cursorPosition) {
 		return '';
 	}
 
-	const moveUp = visibleLineCount - cursorPosition.y;
+	const moveUp = outputCursorRow - cursorPosition.y;
 	return (
 		(moveUp > 0 ? ansiEscapes.cursorUp(moveUp) : '') +
 		ansiEscapes.cursorTo(cursorPosition.x) +
@@ -50,8 +56,9 @@ export const buildReturnToBottom = (
 		return '';
 	}
 
-	// PreviousLineCount includes trailing newline, so visible lines = previousLineCount - 1
-	// cursor is at previousCursorPosition.y, need to go to line (previousLineCount - 1)
+	// The value of previousLineCount is output.split('\n').length, so
+	// previousLineCount - 1 is the physical post-write row for both
+	// trailing-newline and fullscreen/non-trailing output.
 	const down = previousLineCount - 1 - previousCursorPosition.y;
 	return (
 		(down > 0 ? ansiEscapes.cursorDown(down) : '') + ansiEscapes.cursorTo(0)
@@ -62,7 +69,7 @@ export type CursorOnlyInput = {
 	cursorWasShown: boolean;
 	previousLineCount: number;
 	previousCursorPosition: CursorPosition | undefined;
-	visibleLineCount: number;
+	outputCursorRow: number;
 	cursorPosition: CursorPosition | undefined;
 };
 
@@ -77,7 +84,7 @@ export const buildCursorOnlySequence = (input: CursorOnlyInput): string => {
 		input.previousCursorPosition,
 	);
 	const cursorSuffix = buildCursorSuffix(
-		input.visibleLineCount,
+		input.outputCursorRow,
 		input.cursorPosition,
 	);
 	return hidePrefix + returnToBottom + cursorSuffix;

@@ -724,6 +724,227 @@ test.serial(
 );
 
 test.serial(
+	'incremental viewport shrink into exact fullscreen repaints without clearTerminal',
+	async t => {
+		const stdout = createTtyStdout();
+		stdout.rows = 3;
+		const writes = captureWrites(stdout);
+
+		const instance = render(
+			<Box height={2} flexDirection="column">
+				<Text>A</Text>
+				<Text>B</Text>
+			</Box>,
+			{
+				stdout,
+				interactive: true,
+				incrementalRendering: true,
+				maxFps: 1000,
+			},
+		);
+		t.teardown(async () => {
+			instance.unmount();
+			await instance.waitUntilExit();
+		});
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.rows = 2;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+		t.true(writes.includes(bsu));
+		t.true(writes.includes(esu));
+
+		const repaintChunks = writes.filter(
+			write =>
+				write.includes('A') &&
+				write.includes('B') &&
+				write.includes(ansiEscapes.eraseLines(3)),
+		);
+		t.is(repaintChunks.length, 1);
+
+		const bsuIndex = writes.indexOf(bsu);
+		const repaintIndex = writes.indexOf(repaintChunks[0]!);
+		const esuIndex = writes.indexOf(esu);
+		t.true(bsuIndex < repaintIndex);
+		t.true(repaintIndex < esuIndex);
+	},
+);
+
+test.serial(
+	'incremental viewport growth emits trailing-newline transition without full repaint',
+	async t => {
+		const stdout = createTtyStdout();
+		stdout.rows = 2;
+		const writes = captureWrites(stdout);
+
+		const instance = render(
+			<Box height={2} flexDirection="column">
+				<Text>A</Text>
+				<Text>B</Text>
+			</Box>,
+			{
+				stdout,
+				interactive: true,
+				incrementalRendering: true,
+				maxFps: 1000,
+			},
+		);
+		t.teardown(async () => {
+			instance.unmount();
+			await instance.waitUntilExit();
+		});
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.rows = 3;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const expectedTransition =
+			ansiEscapes.cursorUp(1) +
+			ansiEscapes.cursorNextLine +
+			ansiEscapes.cursorNextLine;
+		const transitionChunks = writes.filter(
+			write => write !== bsu && write !== esu && write !== '',
+		);
+		t.deepEqual(transitionChunks, [expectedTransition]);
+
+		const output = writes.join('');
+		t.false(output.includes(ansiEscapes.clearTerminal));
+		t.false(output.includes(ansiEscapes.eraseLines(2)));
+		t.false(stripAnsi(output).includes('A'));
+		t.false(stripAnsi(output).includes('B'));
+
+		const bsuIndex = writes.indexOf(bsu);
+		const transitionIndex = writes.indexOf(expectedTransition);
+		const esuIndex = writes.indexOf(esu);
+		t.true(bsuIndex < transitionIndex);
+		t.true(transitionIndex < esuIndex);
+	},
+);
+
+test.serial(
+	'incremental viewport growth from overflow avoids clearTerminal',
+	async t => {
+		const stdout = createTtyStdout();
+		stdout.rows = 2;
+		const writes = captureWrites(stdout);
+
+		const instance = render(
+			<Box height={3} flexDirection="column">
+				<Text>A</Text>
+				<Text>B</Text>
+				<Text>C</Text>
+			</Box>,
+			{
+				stdout,
+				interactive: true,
+				incrementalRendering: true,
+				maxFps: 1000,
+			},
+		);
+		t.teardown(async () => {
+			instance.unmount();
+			await instance.waitUntilExit();
+		});
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.rows = 4;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const expectedTransition =
+			ansiEscapes.cursorUp(2) +
+			ansiEscapes.cursorNextLine +
+			ansiEscapes.cursorNextLine +
+			ansiEscapes.cursorNextLine;
+		const transitionChunks = writes.filter(
+			write => write !== bsu && write !== esu && write !== '',
+		);
+		t.deepEqual(transitionChunks, [expectedTransition]);
+
+		const output = writes.join('');
+		t.false(output.includes(ansiEscapes.clearTerminal));
+		t.false(output.includes(ansiEscapes.eraseLines(3)));
+		const plainOutput = stripAnsi(output);
+		for (const letter of ['A', 'B', 'C']) {
+			t.false(plainOutput.includes(letter));
+		}
+
+		const bsuIndex = writes.indexOf(bsu);
+		const transitionIndex = writes.indexOf(expectedTransition);
+		const esuIndex = writes.indexOf(esu);
+		t.true(bsuIndex < transitionIndex);
+		t.true(transitionIndex < esuIndex);
+	},
+);
+
+test.serial(
+	'incremental content shrink from fullscreen writes synchronized trailing frame',
+	async t => {
+		const stdout = createTtyStdout();
+		stdout.rows = 3;
+		const writes = captureWrites(stdout);
+
+		function CursorFrame({
+			compact,
+			label,
+		}: {
+			readonly compact: boolean;
+			readonly label: string;
+		}) {
+			const {setCursorPosition} = useCursor();
+			setCursorPosition({x: 0, y: 1});
+
+			return (
+				<Box flexDirection="column">
+					<Text>A</Text>
+					<Text>{compact ? label : 'B'}</Text>
+					{compact ? null : <Text>C</Text>}
+				</Box>
+			);
+		}
+
+		const instance = render(<CursorFrame compact={false} label="B" />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		t.teardown(async () => {
+			instance.unmount();
+			await instance.waitUntilExit();
+		});
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		instance.rerender(<CursorFrame compact label="B" />);
+		await instance.waitUntilRenderFlush();
+
+		const clearChunks = writes.filter(write =>
+			write.includes(ansiEscapes.clearTerminal),
+		);
+		t.is(clearChunks.length, 1);
+		t.true(clearChunks[0]!.endsWith('A\nB\n'));
+
+		const bsuIndex = writes.indexOf(bsu);
+		const clearIndex = writes.indexOf(clearChunks[0]!);
+		const esuIndex = writes.indexOf(esu);
+		t.true(bsuIndex < clearIndex);
+		t.true(clearIndex < esuIndex);
+
+		writes.length = 0;
+		instance.rerender(<CursorFrame compact label="Updated" />);
+		await instance.waitUntilRenderFlush();
+		t.true(stripAnsi(writes.join('')).includes('Updated'));
+	},
+);
+
+test.serial(
 	'#450: non-TTY grow-to-overflow rerender should not clear terminal',
 	async t => {
 		const output = await runNonTtyFixture(
@@ -795,6 +1016,44 @@ test.serial('clear output', async t => {
 });
 
 test.serial(
+	'incremental clear followed by changed output repaints erased rows',
+	async t => {
+		const stdout = createStdout();
+		stdout.rows = 10;
+		const writes = captureWrites(stdout);
+
+		function Frame({second}: {readonly second: string}) {
+			return (
+				<Box flexDirection="column">
+					<Text>A</Text>
+					<Text>{second}</Text>
+				</Box>
+			);
+		}
+
+		const instance = render(<Frame second="B" />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		await instance.waitUntilRenderFlush();
+
+		instance.clear();
+		writes.length = 0;
+		instance.rerender(<Frame second="C" />);
+		await instance.waitUntilRenderFlush();
+
+		const output = stripAnsi(writes.join(''));
+		t.true(output.includes('A'));
+		t.true(output.includes('C'));
+
+		instance.unmount();
+		await instance.waitUntilExit();
+	},
+);
+
+test.serial(
 	'intercept console methods and display result above output',
 	async t => {
 		const ps = term('console');
@@ -844,6 +1103,52 @@ test.serial('rerender on resize', async t => {
 
 	unmount();
 	t.is(stdout.listeners('resize').length, 0);
+});
+
+test.serial('committed cursor survives a sibling-only rerender', async t => {
+	const stdout = createStdout();
+	stdout.rows = 10;
+
+	const CursorOwner = React.memo(() => {
+		const {setCursorPosition} = useCursor();
+		setCursorPosition({x: 0, y: 0});
+		return <Text>cursor</Text>;
+	});
+
+	function Test({count}: {readonly count: number}) {
+		return (
+			<>
+				<CursorOwner />
+				<Text>{count}</Text>
+			</>
+		);
+	}
+
+	const {unmount, rerender, waitUntilExit, waitUntilRenderFlush} = render(
+		<Test count={0} />,
+		{
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		},
+	);
+
+	await waitUntilRenderFlush();
+	const initialWriteCount = stdout.getWrites().length;
+
+	rerender(<Test count={1} />);
+	await waitUntilRenderFlush();
+
+	const updateChunk = stdout
+		.getWrites()
+		.slice(initialWriteCount)
+		.find(write => write.includes('1'));
+	t.truthy(updateChunk);
+	t.true(updateChunk!.endsWith(ansiEscapes.cursorShow));
+
+	unmount();
+	await waitUntilExit();
 });
 
 function ThrottleTestComponent({text}: {readonly text: string}) {
