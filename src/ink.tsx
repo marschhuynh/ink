@@ -10,6 +10,7 @@ import {LegacyRoot, ConcurrentRoot} from 'react-reconciler/constants.js';
 import {type FiberRoot} from 'react-reconciler';
 import Yoga from 'yoga-layout';
 import wrapAnsi from 'wrap-ansi';
+import widestLine from 'widest-line';
 import {getWindowSize} from './utils.js';
 import reconciler from './reconciler.js';
 import render from './renderer.js';
@@ -174,6 +175,21 @@ const shouldRepaintForViewportTransition = ({
 	previousOutputHeight < previousViewportRows &&
 	nextOutputHeight === viewportRows;
 
+const getReflowedLineCount = (output: string, columns: number): number => {
+	if (output === '') {
+		return 0;
+	}
+
+	return wrapAnsi(output, columns, {
+		trim: false,
+		hard: true,
+		wordWrap: false,
+	}).split('\n').length;
+};
+
+const isOutputSoftWrapped = (output: string, columns: number): boolean =>
+	output !== '' && widestLine(output) > columns;
+
 const isErrorInput = (value: unknown): value is Error => {
 	return (
 		value instanceof Error ||
@@ -334,6 +350,8 @@ export default class Ink {
 	private lastOutputHeight: number;
 	private lastViewportRows: number;
 	private lastTerminalWidth: number;
+	private hasPhysicalFrame: boolean;
+	private lastPhysicalFrameWasSoftWrapped: boolean;
 	private readonly container: FiberRoot;
 	private readonly rootNode: dom.DOMElement;
 	// This variable is used only in debug mode to store full static output
@@ -440,6 +458,8 @@ export default class Ink {
 		this.lastOutput = '';
 		this.lastOutputToRender = '';
 		this.lastOutputHeight = 0;
+		this.hasPhysicalFrame = false;
+		this.lastPhysicalFrameWasSoftWrapped = false;
 		this.lastViewportRows = getWindowSize(this.options.stdout).rows;
 		this.lastTerminalWidth = getWindowSize(this.options.stdout).columns;
 
@@ -500,14 +520,6 @@ export default class Ink {
 
 	resized = () => {
 		const currentWidth = getWindowSize(this.options.stdout).columns;
-
-		if (currentWidth < this.lastTerminalWidth) {
-			// We clear the screen when decreasing terminal width to prevent duplicate overlapping re-renders.
-			this.log.clear();
-			this.lastOutput = '';
-			this.lastOutputToRender = '';
-		}
-
 		this.calculateLayout();
 		this.onRender();
 
@@ -545,7 +557,15 @@ export default class Ink {
 		// Clear() resets log-update's cursor state, so replay the latest cursor intent
 		// before restoring output after external stdout/stderr writes.
 		this.log.setCursorPosition(this.cursorPosition);
-		this.log(this.lastOutputToRender || this.lastOutput + '\n');
+		const outputToRestore = this.lastOutputToRender || this.lastOutput + '\n';
+		this.log(outputToRestore);
+		this.hasPhysicalFrame = true;
+		this.lastPhysicalFrameWasSoftWrapped =
+			Boolean(this.options.stdout.isTTY) &&
+			isOutputSoftWrapped(
+				outputToRestore,
+				getWindowSize(this.options.stdout).columns,
+			);
 	};
 
 	calculateLayout = () => {
@@ -732,7 +752,7 @@ export default class Ink {
 			this.options.stdout.write(bsu);
 		}
 
-		this.log.clear();
+		this.log.clear(this.getPhysicalEraseOptions());
 		this.options.stdout.write(data);
 		this.restoreLastOutput();
 
@@ -762,7 +782,7 @@ export default class Ink {
 			this.options.stdout.write(bsu);
 		}
 
-		this.log.clear();
+		this.log.clear(this.getPhysicalEraseOptions());
 		this.options.stderr.write(data);
 		this.restoreLastOutput();
 
@@ -977,8 +997,32 @@ export default class Ink {
 
 	clear(): void {
 		if (this.interactive && !this.options.debug) {
-			this.log.clear();
+			this.log.clear(this.getPhysicalEraseOptions());
+			this.hasPhysicalFrame = false;
+			this.lastPhysicalFrameWasSoftWrapped = false;
 		}
+	}
+
+	private getPhysicalEraseOptions(): {eraseLineCount: number} | undefined {
+		if (
+			!this.options.stdout.isTTY ||
+			!this.hasPhysicalFrame ||
+			this.lastOutputToRender === ''
+		) {
+			return undefined;
+		}
+
+		const terminalWidth = getWindowSize(this.options.stdout).columns;
+		if (!isOutputSoftWrapped(this.lastOutputToRender, terminalWidth)) {
+			return undefined;
+		}
+
+		return {
+			eraseLineCount: getReflowedLineCount(
+				this.lastOutputToRender,
+				terminalWidth,
+			),
+		};
 	}
 
 	patchConsole(): void {
@@ -1082,17 +1126,46 @@ export default class Ink {
 		const hasStaticOutput = staticOutput !== '';
 		const isTty = this.options.stdout.isTTY;
 
+		const {columns: terminalWidth, rows: terminalRows} = getWindowSize(
+			this.options.stdout,
+		);
+
 		// Detect fullscreen: output fills or exceeds terminal height.
 		// Only apply when writing to a real TTY — piped output always gets trailing newlines.
-		const viewportRows = isTty ? getWindowSize(this.options.stdout).rows : 24;
+		const viewportRows = isTty ? terminalRows : 24;
 		const isFullscreen = isTty && outputHeight >= viewportRows;
 		const outputToRender = isFullscreen ? output : output + '\n';
+		const hadPhysicalFrame = this.hasPhysicalFrame;
+		const previousOutputHeight = hadPhysicalFrame ? this.lastOutputHeight : 0;
+		const hasCachedPhysicalOutput =
+			hadPhysicalFrame && this.lastOutputToRender !== '';
+		const columnsDecreased =
+			Boolean(isTty) && terminalWidth < this.lastTerminalWidth;
+		const outputWillRender =
+			hasStaticOutput || this.log.willRender(outputToRender);
+		const shouldClassifyNextFrame =
+			Boolean(isTty) && (columnsDecreased || outputWillRender);
+		const nextFrameIsSoftWrapped =
+			shouldClassifyNextFrame &&
+			isOutputSoftWrapped(outputToRender, terminalWidth);
+		const shouldRepairReflow =
+			Boolean(isTty) &&
+			hasCachedPhysicalOutput &&
+			(columnsDecreased ||
+				((this.lastPhysicalFrameWasSoftWrapped || nextFrameIsSoftWrapped) &&
+					outputWillRender));
+		const reflowedLineCount = shouldRepairReflow
+			? getReflowedLineCount(this.lastOutputToRender, terminalWidth)
+			: 0;
+		const reflowEraseOptions = shouldRepairReflow
+			? {eraseLineCount: reflowedLineCount}
+			: undefined;
 
 		const shouldClearTerminal = shouldClearTerminalForFrame({
 			isTty,
 			viewportRows,
 			previousViewportRows: this.lastViewportRows,
-			previousOutputHeight: this.lastOutputHeight,
+			previousOutputHeight,
 			nextOutputHeight: outputHeight,
 			isUnmounting: this.isUnmounting,
 		});
@@ -1100,7 +1173,7 @@ export default class Ink {
 			isTty,
 			previousViewportRows: this.lastViewportRows,
 			viewportRows,
-			previousOutputHeight: this.lastOutputHeight,
+			previousOutputHeight,
 			nextOutputHeight: outputHeight,
 		});
 
@@ -1117,7 +1190,12 @@ export default class Ink {
 			this.lastOutputToRender = outputToRender;
 			this.lastOutputHeight = outputHeight;
 			this.lastViewportRows = viewportRows;
+			this.lastTerminalWidth = terminalWidth;
 			this.log.sync(outputToRender);
+			this.hasPhysicalFrame = true;
+			this.lastPhysicalFrameWasSoftWrapped = shouldClassifyNextFrame
+				? nextFrameIsSoftWrapped
+				: Boolean(isTty) && isOutputSoftWrapped(outputToRender, terminalWidth);
 
 			if (sync) {
 				this.options.stdout.write(esu);
@@ -1126,6 +1204,8 @@ export default class Ink {
 			return;
 		}
 
+		let didWriteFrame = false;
+
 		// To ensure static output is cleanly rendered before main output, clear main output first
 		if (hasStaticOutput) {
 			const sync = this.shouldSync();
@@ -1133,20 +1213,22 @@ export default class Ink {
 				this.options.stdout.write(bsu);
 			}
 
-			this.log.clear();
+			this.log.clear(reflowEraseOptions);
 			this.options.stdout.write(staticOutput);
 			this.log(outputToRender);
+			didWriteFrame = true;
 
 			if (sync) {
 				this.options.stdout.write(esu);
 			}
-		} else if (shouldRepaint) {
+		} else if (shouldRepaint || reflowEraseOptions !== undefined) {
 			const sync = this.shouldSync();
 			if (sync) {
 				this.options.stdout.write(bsu);
 			}
 
-			this.log.repaint(outputToRender);
+			this.log.repaint(outputToRender, reflowEraseOptions);
+			didWriteFrame = true;
 
 			if (sync) {
 				this.options.stdout.write(esu);
@@ -1157,12 +1239,21 @@ export default class Ink {
 		) {
 			// ThrottledLog manages its own bsu/esu at actual write time
 			this.throttledLog(outputToRender);
+			didWriteFrame = true;
 		}
 
 		this.lastOutput = output;
 		this.lastOutputToRender = outputToRender;
 		this.lastOutputHeight = outputHeight;
+		this.hasPhysicalFrame = hadPhysicalFrame || didWriteFrame;
+		if (didWriteFrame) {
+			this.lastPhysicalFrameWasSoftWrapped = shouldClassifyNextFrame
+				? nextFrameIsSoftWrapped
+				: Boolean(isTty) && isOutputSoftWrapped(outputToRender, terminalWidth);
+		}
+
 		this.lastViewportRows = viewportRows;
+		this.lastTerminalWidth = terminalWidth;
 	}
 
 	private initKittyKeyboard(): void {

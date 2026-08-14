@@ -486,6 +486,54 @@ for (const {name, incremental} of renderingModes) {
 	});
 }
 
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - clear honors a physical erase override`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+		render.setCursorPosition({x: 0, y: 0});
+		render('A\nB\n');
+		resetHistory();
+
+		render.clear({eraseLineCount: 7});
+
+		t.is(
+			stdout.get(),
+			hideCursorEscape +
+				ansiEscapes.cursorDown(2) +
+				ansiEscapes.cursorTo(0) +
+				ansiEscapes.eraseLines(7),
+		);
+	});
+
+	test(`${name} - repaint honors a physical erase override`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+		render.setCursorPosition({x: 0, y: 0});
+		render('A\nB\n');
+		resetHistory();
+
+		t.true(render.repaint('C\nD\n', {eraseLineCount: 7}));
+		const write = stdout.get();
+		t.true(
+			write.startsWith(
+				hideCursorEscape +
+					ansiEscapes.cursorDown(2) +
+					ansiEscapes.cursorTo(0) +
+					ansiEscapes.eraseLines(7),
+			),
+		);
+		t.true(write.includes('C\nD\n'));
+	});
+
+	test(`${name} - repaint ignores a physical erase override after clear`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+		render('A\nB\n');
+		render.clear();
+		resetHistory();
+
+		t.true(render.repaint('C\n', {eraseLineCount: 7}));
+		t.is(stdout.get(), 'C\n');
+	});
+}
+
 test('standard rendering - clearing cursor position stops cursor positioning', t => {
 	const stdout = createStdout();
 	const render = logUpdate.create(stdout, {showCursor: true});
