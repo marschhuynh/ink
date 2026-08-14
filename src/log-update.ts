@@ -14,10 +14,14 @@ import {
 
 export type {CursorPosition} from './cursor-helpers.js';
 
+type EraseOptions = {
+	eraseLineCount?: number;
+};
+
 export type LogUpdate = {
-	clear: () => void;
+	clear: (options?: EraseOptions) => void;
 	done: () => void;
-	repaint: (str: string) => boolean;
+	repaint: (str: string, options?: EraseOptions) => boolean;
 	reset: () => void;
 	sync: (str: string) => void;
 	setCursorPosition: (position: CursorPosition | undefined) => void;
@@ -30,6 +34,17 @@ export type LogUpdate = {
 // that `split('\n')` produces when the string ends with '\n'.
 const visibleLineCount = (lines: string[], str: string): number =>
 	str.endsWith('\n') ? lines.length - 1 : lines.length;
+
+const getEraseLineCount = (
+	cachedLineCount: number,
+	options?: EraseOptions,
+): number => {
+	if (cachedLineCount === 0) {
+		return 0;
+	}
+
+	return options?.eraseLineCount ?? cachedLineCount;
+};
 
 const createStandard = (
 	stream: Writable,
@@ -55,7 +70,7 @@ const createStandard = (
 		return str !== previousOutput || cursorChanged;
 	};
 
-	const writeFrame = (str: string, force: boolean) => {
+	const writeFrame = (str: string, force: boolean, options?: EraseOptions) => {
 		if (!showCursor && !hasHiddenCursor) {
 			cliCursor.hide(stream);
 			hasHiddenCursor = true;
@@ -98,7 +113,9 @@ const createStandard = (
 			);
 			stream.write(
 				returnPrefix +
-					ansiEscapes.eraseLines(previousLineCount) +
+					ansiEscapes.eraseLines(
+						getEraseLineCount(previousLineCount, options),
+					) +
 					str +
 					cursorSuffix,
 			);
@@ -111,15 +128,19 @@ const createStandard = (
 	};
 
 	const render = (str: string) => writeFrame(str, false);
-	render.repaint = (str: string) => writeFrame(str, true);
+	render.repaint = (str: string, options?: EraseOptions) =>
+		writeFrame(str, true, options);
 
-	render.clear = () => {
+	render.clear = (options?: EraseOptions) => {
 		const prefix = buildReturnToBottomPrefix(
 			cursorWasShown,
 			previousLineCount,
 			previousCursorPosition,
 		);
-		stream.write(prefix + ansiEscapes.eraseLines(previousLineCount));
+		stream.write(
+			prefix +
+				ansiEscapes.eraseLines(getEraseLineCount(previousLineCount, options)),
+		);
 		previousOutput = '';
 		previousLineCount = 0;
 		previousCursorPosition = undefined;
@@ -330,7 +351,7 @@ const createIncremental = (
 		return true;
 	};
 
-	render.repaint = (str: string) => {
+	render.repaint = (str: string, options?: EraseOptions) => {
 		if (!showCursor && !hasHiddenCursor) {
 			cliCursor.hide(stream);
 			hasHiddenCursor = true;
@@ -349,7 +370,9 @@ const createIncremental = (
 
 		stream.write(
 			returnPrefix +
-				ansiEscapes.eraseLines(previousLines.length) +
+				ansiEscapes.eraseLines(
+					getEraseLineCount(previousLines.length, options),
+				) +
 				str +
 				cursorSuffix,
 		);
@@ -361,13 +384,18 @@ const createIncremental = (
 		return true;
 	};
 
-	render.clear = () => {
+	render.clear = (options?: EraseOptions) => {
 		const prefix = buildReturnToBottomPrefix(
 			cursorWasShown,
 			previousLines.length,
 			previousCursorPosition,
 		);
-		stream.write(prefix + ansiEscapes.eraseLines(previousLines.length));
+		stream.write(
+			prefix +
+				ansiEscapes.eraseLines(
+					getEraseLineCount(previousLines.length, options),
+				),
+		);
 		previousOutput = '';
 		previousLines = [];
 		previousCursorPosition = undefined;

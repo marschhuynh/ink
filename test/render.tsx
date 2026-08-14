@@ -19,8 +19,19 @@ import ansiEscapes from 'ansi-escapes';
 import stripAnsi from 'strip-ansi';
 import boxen from 'boxen';
 import delay from 'delay';
-import {render, Box, Text, useApp, useCursor, useInput} from '../src/index.js';
-import {type RenderMetrics} from '../src/ink.js';
+import {
+	render,
+	Box,
+	Static,
+	Text,
+	useApp,
+	useCursor,
+	useInput,
+	useStdout,
+	useWindowSize,
+} from '../src/index.js';
+import Ink, {type RenderMetrics} from '../src/ink.js';
+import logUpdate, {type LogUpdate} from '../src/log-update.js';
 import {bsu, esu} from '../src/write-synchronized.js';
 import {createStdin, emitReadable} from './helpers/create-stdin.js';
 import createStdout from './helpers/create-stdout.js';
@@ -33,6 +44,17 @@ const require = createRequire(import.meta.url);
 const {spawn} = require('node-pty') as typeof import('node-pty');
 
 const __dirname = url.fileURLToPath(new URL('.', import.meta.url));
+
+const registerInstanceTeardown = (
+	t: ExecutionContext,
+	instance: ReturnType<typeof render>,
+): void => {
+	const exitPromise = instance.waitUntilExit();
+	t.teardown(async () => {
+		instance.unmount();
+		await exitPromise;
+	});
+};
 
 const term = (fixture: string, args: string[] = []) => {
 	let resolve: (value?: unknown) => void;
@@ -742,10 +764,7 @@ test.serial(
 				maxFps: 1000,
 			},
 		);
-		t.teardown(async () => {
-			instance.unmount();
-			await instance.waitUntilExit();
-		});
+		registerInstanceTeardown(t, instance);
 		await instance.waitUntilRenderFlush();
 
 		writes.length = 0;
@@ -792,10 +811,7 @@ test.serial(
 				maxFps: 1000,
 			},
 		);
-		t.teardown(async () => {
-			instance.unmount();
-			await instance.waitUntilExit();
-		});
+		registerInstanceTeardown(t, instance);
 		await instance.waitUntilRenderFlush();
 
 		writes.length = 0;
@@ -846,10 +862,7 @@ test.serial(
 				maxFps: 1000,
 			},
 		);
-		t.teardown(async () => {
-			instance.unmount();
-			await instance.waitUntilExit();
-		});
+		registerInstanceTeardown(t, instance);
 		await instance.waitUntilRenderFlush();
 
 		writes.length = 0;
@@ -915,10 +928,7 @@ test.serial(
 			incrementalRendering: true,
 			maxFps: 1000,
 		});
-		t.teardown(async () => {
-			instance.unmount();
-			await instance.waitUntilExit();
-		});
+		registerInstanceTeardown(t, instance);
 		await instance.waitUntilRenderFlush();
 
 		writes.length = 0;
@@ -1048,8 +1058,45 @@ test.serial(
 		t.true(output.includes('A'));
 		t.true(output.includes('C'));
 
+		const exitPromise = instance.waitUntilExit();
 		instance.unmount();
-		await instance.waitUntilExit();
+		await exitPromise;
+	},
+);
+
+test.serial(
+	'viewport shrink after public clear does not clear an absent frame',
+	async t => {
+		const stdout = createTtyStdout(100);
+		stdout.rows = 4;
+		const writes = captureWrites(stdout);
+		const instance = render(
+			<Box height={3} flexDirection="column">
+				<Text>A</Text>
+				<Text>B</Text>
+				<Text>C</Text>
+			</Box>,
+			{
+				stdout,
+				interactive: true,
+				incrementalRendering: true,
+				maxFps: 1000,
+			},
+		);
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		instance.clear();
+		writes.length = 0;
+		stdout.rows = 2;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const output = writes.join('');
+		t.false(output.includes(ansiEscapes.clearTerminal));
+		for (const line of ['A', 'B', 'C']) {
+			t.true(stripAnsi(output).includes(line));
+		}
 	},
 );
 
@@ -1103,6 +1150,679 @@ test.serial('rerender on resize', async t => {
 
 	unmount();
 	t.is(stdout.listeners('resize').length, 0);
+});
+
+function WidthReflowFrame({suffix = ''}: {readonly suffix?: string}) {
+	const {setCursorPosition} = useCursor();
+	setCursorPosition({x: 1, y: 1});
+
+	return (
+		<Box borderStyle="round">
+			<Text>{`ABCDEFGH${suffix}`}</Text>
+		</Box>
+	);
+}
+
+function WidthReflowWithStatic({items}: {readonly items: readonly string[]}) {
+	return (
+		<>
+			<Static items={items}>{item => <Text key={item}>{item}</Text>}</Static>
+			<WidthReflowFrame />
+		</>
+	);
+}
+
+function FixedWidthCursorFrame({cursorX}: {readonly cursorX: number}) {
+	const {setCursorPosition} = useCursor();
+	setCursorPosition({x: cursorX, y: 0});
+
+	return (
+		<Box width={10} minWidth={10} flexShrink={0}>
+			<Text>ABCDEFGH</Text>
+		</Box>
+	);
+}
+
+function FixedWidthTwoRowFrame() {
+	return (
+		<Box
+			width={10}
+			minWidth={10}
+			height={2}
+			flexShrink={0}
+			flexDirection="column"
+		>
+			<Text>ABCDEFGH</Text>
+			<Text>12345678</Text>
+		</Box>
+	);
+}
+
+function ResizeAwareWidthFrame({
+	onColumns,
+}: {
+	readonly onColumns?: (columns: number) => void;
+}) {
+	const {columns} = useWindowSize();
+	const {setCursorPosition} = useCursor();
+	setCursorPosition({x: 0, y: 0});
+
+	useEffect(() => {
+		onColumns?.(columns);
+	}, [columns, onColumns]);
+
+	return (
+		<Box width={columns} minWidth={columns} flexShrink={0}>
+			<Text>{'X'.repeat(columns)}</Text>
+		</Box>
+	);
+}
+
+test.serial(
+	'incremental column shrink erases reflowed rows and repaints once',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const instance = render(<WidthReflowFrame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.columns = 5;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const repaint = writes.find(
+			write =>
+				write.includes(ansiEscapes.eraseLines(7)) &&
+				stripAnsi(write).includes('╭'),
+		);
+		t.truthy(repaint);
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+
+		const bsuIndex = writes.indexOf(bsu);
+		const repaintIndex = writes.indexOf(repaint!);
+		const esuIndex = writes.indexOf(esu);
+		t.true(bsuIndex < repaintIndex);
+		t.true(repaintIndex < esuIndex);
+
+		writes.length = 0;
+		instance.rerender(<WidthReflowFrame suffix="!" />);
+		await instance.waitUntilRenderFlush();
+		t.true(stripAnsi(writes.join('')).includes('!'));
+		t.false(stripAnsi(writes.join('')).includes('╭'));
+	},
+);
+
+test.serial(
+	'column shrink keeps resize invalidation through useWindowSize follow-up commit',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		let resolveNarrowColumns!: () => void;
+		const narrowColumnsCommitted = new Promise<void>(resolve => {
+			resolveNarrowColumns = resolve;
+		});
+		const onColumns = (columns: number) => {
+			if (columns === 5) {
+				resolveNarrowColumns();
+			}
+		};
+		const instance = render(<ResizeAwareWidthFrame onColumns={onColumns} />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.columns = 5;
+		stdout.emit('resize');
+		await narrowColumnsCommitted;
+		await instance.waitUntilRenderFlush();
+
+		const finalFrameWrite = writes.findLast(write =>
+			stripAnsi(write).includes('XXXXX'),
+		);
+		t.truthy(finalFrameWrite);
+		t.is(stripAnsi(finalFrameWrite!), 'XXXXX\n');
+		t.true(
+			finalFrameWrite!.includes(ansiEscapes.eraseLines(3)),
+			writes
+				.map((write, index) => `${index}: ${JSON.stringify(write)}`)
+				.join('\n'),
+		);
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+	},
+);
+
+test.serial(
+	'ordinary interactive frame skips terminal reflow measurement',
+	t => {
+		const stdout = createTtyStdout(80);
+		stdout.rows = 24;
+		const ink = Object.create(Ink.prototype) as {
+			options: {stdout: NodeJS.WriteStream};
+			hasPhysicalFrame: boolean;
+			lastOutput: string;
+			lastOutputToRender: string;
+			lastOutputHeight: number;
+			lastViewportRows: number;
+			lastTerminalWidth: number;
+			lastPhysicalFrameWasSoftWrapped: boolean;
+			isUnmounting: boolean;
+			log: {
+				willRender: (output: string) => boolean;
+				isCursorDirty: () => boolean;
+			};
+			throttledLog: (output: string) => void;
+			renderInteractiveFrame: (
+				output: string,
+				outputHeight: number,
+				staticOutput: string,
+			) => void;
+		};
+		ink.options = {stdout};
+		ink.hasPhysicalFrame = true;
+		ink.lastOutput = 'hello';
+		ink.lastOutputToRender = 'hello\n';
+		ink.lastOutputHeight = 1;
+		ink.lastViewportRows = 24;
+		ink.lastTerminalWidth = 80;
+		ink.lastPhysicalFrameWasSoftWrapped = false;
+		ink.isUnmounting = false;
+		ink.log = {
+			willRender: () => false,
+			isCursorDirty: () => false,
+		};
+		ink.throttledLog = () => {};
+
+		const segment = stub(Intl.Segmenter.prototype, 'segment').throws(
+			new Error('ordinary render measured terminal reflow'),
+		);
+		try {
+			t.notThrows(() => {
+				ink.renderInteractiveFrame('hello', 1, '');
+			});
+		} finally {
+			segment.restore();
+		}
+	},
+);
+
+test.serial(
+	'ordinary update repaints before a fitted frame becomes soft-wrapped',
+	t => {
+		const stdout = createTtyStdout(5);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const log = logUpdate.create(stdout, {incremental: true});
+		log.sync('abc\nzz\n');
+
+		const ink = Object.create(Ink.prototype) as {
+			options: {stdout: NodeJS.WriteStream};
+			interactive: boolean;
+			hasPhysicalFrame: boolean;
+			lastOutput: string;
+			lastOutputToRender: string;
+			lastOutputHeight: number;
+			lastViewportRows: number;
+			lastTerminalWidth: number;
+			lastPhysicalFrameWasSoftWrapped: boolean;
+			isUnmounting: boolean;
+			fullStaticOutput: string;
+			log: LogUpdate;
+			throttledLog: LogUpdate;
+			renderInteractiveFrame: (
+				output: string,
+				outputHeight: number,
+				staticOutput: string,
+			) => void;
+		};
+		ink.options = {stdout};
+		ink.interactive = true;
+		ink.hasPhysicalFrame = true;
+		ink.lastOutput = 'abc\nzz';
+		ink.lastOutputToRender = 'abc\nzz\n';
+		ink.lastOutputHeight = 2;
+		ink.lastViewportRows = 24;
+		ink.lastTerminalWidth = 5;
+		ink.lastPhysicalFrameWasSoftWrapped = false;
+		ink.isUnmounting = false;
+		ink.fullStaticOutput = '';
+		ink.log = log;
+		ink.throttledLog = log;
+
+		ink.renderInteractiveFrame('ABCDEFGH\nzz', 2, '');
+
+		const repaint = writes.find(
+			write =>
+				write.includes(ansiEscapes.eraseLines(3)) &&
+				stripAnsi(write).includes('ABCDEFGH\nzz'),
+		);
+		t.truthy(
+			repaint,
+			writes
+				.map((write, index) => `${index}: ${JSON.stringify(write)}`)
+				.join('\n'),
+		);
+	},
+);
+
+test.serial(
+	'incremental fullscreen column shrink erases only reflowed visible rows',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 2;
+		const writes = captureWrites(stdout);
+		const instance = render(<FixedWidthTwoRowFrame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.columns = 5;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const repaint = writes.find(
+			write =>
+				write.includes(ansiEscapes.eraseLines(4)) &&
+				stripAnsi(write).includes('ABCDEFGH'),
+		);
+		t.truthy(repaint);
+		t.true(stripAnsi(repaint!).includes('12345678'));
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+		const repaintIndex = writes.indexOf(repaint!);
+		t.true(writes.indexOf(bsu) < repaintIndex);
+		t.true(repaintIndex < writes.indexOf(esu));
+	},
+);
+
+test.serial(
+	'public clear erases every row of an initially soft-wrapped frame',
+	async t => {
+		const stdout = createTtyStdout(5);
+		stdout.rows = 2;
+		const writes = captureWrites(stdout);
+		const instance = render(<FixedWidthTwoRowFrame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		instance.clear();
+
+		t.true(
+			writes.some(write => write.includes(ansiEscapes.eraseLines(4))),
+			writes
+				.map((write, index) => `${index}: ${JSON.stringify(write)}`)
+				.join('\n'),
+		);
+	},
+);
+
+test.serial(
+	'stdout writes erase every row before restoring a soft-wrapped frame',
+	async t => {
+		const stdout = createTtyStdout(5);
+		stdout.rows = 2;
+		const writes = captureWrites(stdout);
+		let writeAbove: ((data: string) => void) | undefined;
+
+		function Frame() {
+			const {write} = useStdout();
+			writeAbove = write;
+			return <FixedWidthTwoRowFrame />;
+		}
+
+		const instance = render(<Frame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		t.truthy(writeAbove);
+		writes.length = 0;
+		writeAbove!('external\n');
+
+		const eraseIndex = writes.findIndex(write =>
+			write.includes(ansiEscapes.eraseLines(4)),
+		);
+		const externalIndex = writes.findIndex(write => write === 'external\n');
+		t.true(
+			eraseIndex >= 0,
+			writes
+				.map((write, index) => `${index}: ${JSON.stringify(write)}`)
+				.join('\n'),
+		);
+		t.true(eraseIndex < externalIndex);
+	},
+);
+
+test.serial(
+	'initially soft-wrapped frame repaints before a cursor-only update',
+	async t => {
+		const stdout = createTtyStdout(5);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const instance = render(<FixedWidthCursorFrame cursorX={1} />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		instance.rerender(<FixedWidthCursorFrame cursorX={2} />);
+		await instance.waitUntilRenderFlush();
+
+		const repaint = writes.find(
+			write =>
+				write.includes(ansiEscapes.eraseLines(3)) &&
+				stripAnsi(write).includes('ABCDEFGH'),
+		);
+		t.truthy(
+			repaint,
+			writes
+				.map((write, index) => `${index}: ${JSON.stringify(write)}`)
+				.join('\n'),
+		);
+	},
+);
+
+test.serial(
+	'incremental column shrink after public clear does not erase absent rows',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const instance = render(<WidthReflowFrame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		instance.clear();
+		writes.length = 0;
+		stdout.columns = 5;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const repaint = writes.find(write => stripAnsi(write).includes('╭'));
+		t.truthy(repaint);
+		t.false(repaint!.includes(ansiEscapes.eraseLines(7)));
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+	},
+);
+
+test.serial(
+	'stdout restoration after public clear restores width-reflow tracking',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		let writeAbove: ((data: string) => void) | undefined;
+
+		function Frame() {
+			const {write} = useStdout();
+			writeAbove = write;
+			return <WidthReflowFrame />;
+		}
+
+		const instance = render(<Frame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		t.truthy(writeAbove);
+		instance.clear();
+		writeAbove!('external\n');
+
+		writes.length = 0;
+		stdout.columns = 5;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const repaint = writes.find(
+			write =>
+				write.includes(ansiEscapes.eraseLines(7)) &&
+				stripAnsi(write).includes('╭'),
+		);
+		t.truthy(repaint);
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+	},
+);
+
+test.serial(
+	'no-write resize after public clear keeps the frame physically absent',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const instance = render(<FixedWidthTwoRowFrame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		instance.clear();
+		writes.length = 0;
+		stdout.columns = 5;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+		t.is(writes.length, 0);
+
+		stdout.rows = 1;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const output = writes.join('');
+		t.false(output.includes(ansiEscapes.clearTerminal));
+		t.true(stripAnsi(output).includes('ABCDEFGH'));
+		t.true(stripAnsi(output).includes('12345678'));
+	},
+);
+
+test.serial(
+	'incremental column shrink with static output uses reflowed erase height',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const instance = render(<WidthReflowWithStatic items={[]} />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.columns = 5;
+		instance.rerender(<WidthReflowWithStatic items={['static']} />);
+		await instance.waitUntilRenderFlush();
+
+		const eraseIndex = writes.findIndex(write =>
+			write.includes(ansiEscapes.eraseLines(7)),
+		);
+		const staticIndex = writes.findIndex(write =>
+			stripAnsi(write).replaceAll('\n', '').includes('static'),
+		);
+		t.true(eraseIndex >= 0);
+		t.true(
+			staticIndex > eraseIndex,
+			writes
+				.map((write, index) => `${index}: ${JSON.stringify(stripAnsi(write))}`)
+				.join('\n'),
+		);
+		t.true(writes.indexOf(bsu) < eraseIndex);
+		t.true(staticIndex < writes.lastIndexOf(esu));
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+	},
+);
+
+test.serial('incremental column growth stays on the diff path', async t => {
+	const stdout = createTtyStdout(5);
+	stdout.rows = 24;
+	const writes = captureWrites(stdout);
+	const instance = render(<WidthReflowFrame />, {
+		stdout,
+		interactive: true,
+		incrementalRendering: true,
+		maxFps: 1000,
+	});
+	registerInstanceTeardown(t, instance);
+	await instance.waitUntilRenderFlush();
+
+	writes.length = 0;
+	stdout.columns = 10;
+	stdout.emit('resize');
+	await instance.waitUntilRenderFlush();
+
+	const output = writes.join('');
+	t.false(output.includes(ansiEscapes.clearTerminal));
+	t.false(output.includes(ansiEscapes.eraseLines(6)));
+	t.true(output.includes(ansiEscapes.eraseLines(3)));
+	t.true(stripAnsi(output).includes('╭'));
+});
+
+test.serial(
+	'incremental column shrink detected by a later render repaints reflowed rows',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const instance = render(<WidthReflowFrame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.columns = 5;
+		instance.rerender(<WidthReflowFrame suffix="!" />);
+		await instance.waitUntilRenderFlush();
+
+		const repaint = writes.find(
+			write =>
+				write.includes(ansiEscapes.eraseLines(7)) &&
+				stripAnsi(write).includes('╭'),
+		);
+		t.truthy(repaint);
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+		const repaintIndex = writes.indexOf(repaint!);
+		t.true(writes.indexOf(bsu) < repaintIndex);
+		t.true(repaintIndex < writes.indexOf(esu));
+	},
+);
+
+test.serial(
+	'incremental delayed cursor-only render repairs a missed column shrink',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const instance = render(<FixedWidthCursorFrame cursorX={1} />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		registerInstanceTeardown(t, instance);
+		await instance.waitUntilRenderFlush();
+
+		const initialFrame = writes.find(write =>
+			stripAnsi(write).includes('ABCDEFGH'),
+		);
+		t.truthy(initialFrame);
+
+		writes.length = 0;
+		stdout.columns = 5;
+		await delay(25);
+		t.is(writes.length, 0);
+
+		instance.rerender(<FixedWidthCursorFrame cursorX={2} />);
+		await instance.waitUntilRenderFlush();
+
+		const repaint = writes.find(
+			write =>
+				write.includes(ansiEscapes.eraseLines(3)) &&
+				stripAnsi(write).includes('ABCDEFGH'),
+		);
+		t.truthy(repaint);
+		t.is(stripAnsi(repaint!), stripAnsi(initialFrame!));
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+		const repaintIndex = writes.indexOf(repaint!);
+		t.true(writes.indexOf(bsu) < repaintIndex);
+		t.true(repaintIndex < writes.indexOf(esu));
+	},
+);
+
+test.serial('column shrink counts a wide-grapheme wrap boundary', async t => {
+	const stdout = createTtyStdout(10);
+	stdout.rows = 24;
+	const writes = captureWrites(stdout);
+	const instance = render(<Text color="red">aaaa中aaaa</Text>, {
+		stdout,
+		interactive: true,
+		incrementalRendering: true,
+		maxFps: 1000,
+	});
+	registerInstanceTeardown(t, instance);
+	await instance.waitUntilRenderFlush();
+
+	writes.length = 0;
+	stdout.columns = 5;
+	stdout.emit('resize');
+	await instance.waitUntilRenderFlush();
+
+	const repaint = writes.find(
+		write =>
+			write.includes(ansiEscapes.eraseLines(4)) &&
+			stripAnsi(write).includes('aaaa'),
+	);
+	t.truthy(repaint);
+	t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+	const repaintIndex = writes.indexOf(repaint!);
+	t.true(writes.indexOf(bsu) < repaintIndex);
+	t.true(repaintIndex < writes.indexOf(esu));
 });
 
 test.serial('committed cursor survives a sibling-only rerender', async t => {

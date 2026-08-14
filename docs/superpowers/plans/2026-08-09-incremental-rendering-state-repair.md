@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Repair five frame/cursor state mismatches while preserving surgical incremental updates and introducing no new `clearTerminal` operations.
+**Goal:** Repair six frame/cursor state mismatches while preserving surgical incremental updates and introducing no new `clearTerminal` operations.
 
-**Architecture:** Keep the current standard and incremental renderers, but separate persistent cursor intent from dirty state, calculate cursor movement from the physical post-write row, and add an internal line-oriented complete-frame repaint operation. Ink will track the viewport used by the previous frame so row-resize boundary transitions can choose between ordinary incremental output and one synchronized erase-lines repaint.
+**Architecture:** Keep the current standard and incremental renderers, but separate persistent cursor intent from dirty state, calculate cursor movement from the physical post-write row, and add an internal line-oriented complete-frame repaint operation. Ink will track the viewport and columns used by the previous frame: row-resize boundary transitions use a synchronized repaint when representation changes, while column decreases derive the old frame's reflowed physical row count and perform one synchronized complete repaint. Column growth retains the existing incremental shrink/diff path.
 
 **Tech Stack:** TypeScript 5.8, React 19, Ink's custom reconciler, AVA 7, Sinon spies, `ansi-escapes`, Node.js 22+
 
@@ -23,11 +23,12 @@
 ## File Structure
 
 - `src/cursor-helpers.ts`: owns physical cursor-row calculation and escape-sequence construction.
-- `src/log-update.ts`: owns cached terminal output, incremental line diffing, persistent cursor intent, complete-frame repainting, and teardown.
-- `src/ink.tsx`: owns public clear behavior, interactive viewport metadata, render-mode selection, and synchronized repaint orchestration.
+- `src/log-update.ts`: owns cached terminal output, incremental line diffing, persistent cursor intent, complete-frame repainting, width-aware physical erase overrides, and teardown.
+- `src/ink.tsx`: owns public clear behavior, interactive viewport/column metadata, reflowed-row counting, render-mode selection, and synchronized repaint orchestration.
 - `test/cursor-helpers.tsx`: verifies cursor-row and escape-sequence calculations in isolation.
 - `test/log-update.tsx`: verifies standard/incremental state-machine transitions and emitted write sequences.
 - `test/render.tsx`: verifies React/Ink integration, public clear semantics, cursor commit lifecycle, resize behavior, and BSU/ESU ordering.
+- `test/terminal-resize.tsx`: preserves general resize/listener behavior and verifies that both width directions avoid `clearTerminal`.
 
 ---
 
@@ -711,8 +712,8 @@ git commit -m "fix: restore terminal cursor position on teardown"
 
 **Interfaces:**
 - Consumes: `LogUpdate.clear()` preserving desired cursor intent while resetting rendered state from Task 2
-- Produces: public `Instance.clear()` leaves `log-update` output cache empty
-- Leaves unchanged: `Ink.lastOutput` suppresses an unchanged final React frame
+- Produces: public `Instance.clear()` leaves `log-update` output cache empty and sets `hasPhysicalFrame` false
+- Leaves unchanged: `lastOutput`, `lastOutputToRender`, and `lastOutputHeight` retain the latest React frame metadata
 
 - [ ] **Step 1: Add a failing integration test for clear followed by changed content**
 
@@ -773,11 +774,11 @@ Replace `Ink.clear()` with:
 clear(): void {
 	if (this.interactive && !this.options.debug) {
 		this.log.clear();
+		this.hasPhysicalFrame = false;
 	}
 }
-```
 
-Do not clear `lastOutput`, `lastOutputToRender`, or `lastOutputHeight`; those values describe the last React frame and preserve unchanged-unmount suppression. The `log-update` cache now correctly describes the physically blank terminal.
+Do not clear `lastOutput`, `lastOutputToRender`, or `lastOutputHeight`; those values describe the last React representation and preserve unchanged-unmount/layout behavior. `hasPhysicalFrame` alone records that the terminal is blank. Set it true after any actual frame write and in `restoreLastOutput()` after stdout/stderr restoration replays the frame.
 
 - [ ] **Step 4: Run clear-specific unit and integration tests**
 
@@ -787,7 +788,7 @@ Run:
 npm exec -- ava test/log-update.tsx test/render.tsx --match='*clear*'
 ```
 
-Expected: PASS. Direct `LogUpdate.clear()` still resets incremental state, and public clear followed by changed output includes both `A` and `C`.
+Expected: PASS. Direct `LogUpdate.clear()` still resets incremental state, public clear followed by changed output includes both `A` and `C`, and a later viewport shrink does not invoke `clearTerminal` for the absent old frame.
 
 - [ ] **Step 5: Conditional commit checkpoint**
 
@@ -1509,7 +1510,343 @@ git commit -m "fix: repaint invalidated fullscreen resize frames"
 
 ---
 
-### Task 7: Complete package verification and review
+### Task 7: Repair terminal-column reflow invalidation
+
+**Starting point:** Tasks 1-6 are present on the current branch. This task addresses the separately confirmed column-reflow failure without reopening their cursor, public-clear, or row-viewport contracts.
+
+**Files:**
+- Modify: `src/log-update.ts:17-25,34-190,193-438`
+- Modify: `src/ink.tsx:158-175,330-336,501-515,1077-1166`
+- Test: `test/log-update.tsx:240-486,793-870`
+- Test: `test/render.tsx:1018-1160`
+- Test: `test/terminal-resize.tsx:153-286`
+
+**Interfaces:**
+- Extends internal `LogUpdate.clear()` and `LogUpdate.repaint()` with an optional physical erase-count override; this is not a public Ink API.
+- Consumes: `lastOutputToRender`, `lastTerminalWidth`, persistent cursor state, `LogUpdate.willRender()`, and synchronized repainting from prior tasks.
+- Produces: a terminal-equivalent prior-frame row count at current columns, one complete repaint for each column decrease, and continued invalidation while the last written frame is physically soft-wrapped beyond its cached logical rows.
+- Preserves: cached cursor return-to-bottom distance, static-output ordering, existing `clearTerminal` fallbacks, no erase of a frame already removed by `clear()`/`reset()`, byte-identical idle no-ops, and surgical diffing as soon as physical and logical row geometry match.
+
+- [ ] **Step 1: Add failing `LogUpdate` erase-override tests**
+
+Add these beside the existing clear/repaint tests in `test/log-update.tsx` for both `renderingModes`:
+
+```tsx
+for (const {name, incremental} of renderingModes) {
+	test(`${name} - clear honors a physical erase override`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+		render.setCursorPosition({x: 0, y: 0});
+		render('A\nB\n');
+		resetHistory();
+
+		render.clear({eraseLineCount: 7});
+
+		t.is(
+			stdout.get(),
+			hideCursorEscape +
+				ansiEscapes.cursorDown(2) +
+				ansiEscapes.cursorTo(0) +
+				ansiEscapes.eraseLines(7),
+		);
+	});
+
+	test(`${name} - repaint honors a physical erase override`, t => {
+		const {stdout, render} = createRenderForMode(incremental);
+		render.setCursorPosition({x: 0, y: 0});
+		render('A\nB\n');
+		resetHistory();
+
+		t.true(render.repaint('C\nD\n', {eraseLineCount: 7}));
+		const write = stdout.get();
+		t.true(
+			write.startsWith(
+				hideCursorEscape +
+					ansiEscapes.cursorDown(2) +
+					ansiEscapes.cursorTo(0) +
+					ansiEscapes.eraseLines(7),
+			),
+		);
+		t.true(write.includes('C\nD\n'));
+	});
+}
+```
+
+The expected cursor-down distance remains based on the cached three-slot frame (`A`, `B`, trailing baseline). Only the physical erase height is overridden.
+
+Also add a mode-loop regression that renders a frame, calls `clear()`, resets write history, and then calls `repaint()` with an erase override. The repaint must write only the new frame because the cache no longer represents physically present rows.
+
+- [ ] **Step 2: Add a failing narrow-width physical-reflow integration test**
+
+Add a reusable fixture near the existing resize tests in `test/render.tsx`:
+
+```tsx
+function WidthReflowFrame({suffix = ''}: {readonly suffix?: string}) {
+	const {setCursorPosition} = useCursor();
+	setCursorPosition({x: 1, y: 1});
+
+	return (
+		<Box borderStyle="round">
+			<Text>{`ABCDEFGH${suffix}`}</Text>
+		</Box>
+	);
+}
+```
+
+Then add:
+
+```tsx
+test.serial(
+	'incremental column shrink erases reflowed rows and repaints once',
+	async t => {
+		const stdout = createTtyStdout(10);
+		stdout.rows = 24;
+		const writes = captureWrites(stdout);
+		const instance = render(<WidthReflowFrame />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		t.teardown(async () => {
+			instance.unmount();
+			await instance.waitUntilExit();
+		});
+		await instance.waitUntilRenderFlush();
+
+		writes.length = 0;
+		stdout.columns = 5;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const repaint = writes.find(
+			write =>
+				write.includes(ansiEscapes.eraseLines(7)) &&
+				stripAnsi(write).includes('╭'),
+		);
+		t.truthy(repaint);
+		t.false(writes.some(write => write.includes(ansiEscapes.clearTerminal)));
+
+		const bsuIndex = writes.indexOf(bsu);
+		const repaintIndex = writes.indexOf(repaint!);
+		const esuIndex = writes.indexOf(esu);
+		t.true(bsuIndex < repaintIndex);
+		t.true(repaintIndex < esuIndex);
+
+		writes.length = 0;
+		instance.rerender(<WidthReflowFrame suffix="!" />);
+		await instance.waitUntilRenderFlush();
+		t.true(stripAnsi(writes.join('')).includes('!'));
+		t.false(stripAnsi(writes.join('')).includes('╭'));
+	},
+);
+```
+
+The initial box has three 10-cell visible rows plus a trailing baseline (four cached newline slots). At five columns, the terminal reflows those rows to six visible rows plus the baseline, so the correct erase is seven rows. Add a fixed-width two-row fullscreen control as well: because its output has no trailing newline, shrinking 10 → 5 erases exactly four reflowed visible rows rather than inventing a fifth baseline row. The final changed-frame assertion proves normal updates return to surgical diffing.
+
+Add public-clear boundaries as well: (1) render the ten-column frame, call `instance.clear()`, then shrink to five columns—the resize may repaint the new frame but must not emit the seven-row override for the absent old frame; (2) use a fixed-width two-row frame whose bytes do not change, clear it, shrink columns with no write, then shrink rows—the no-write resize must keep `hasPhysicalFrame` false and avoid `clearTerminal`; (3) after clear, restore the frame through `useStdout().write()`, then shrink columns—the replay must set `hasPhysicalFrame` true so the seven-row reflow erase is used again.
+
+- [ ] **Step 3: Add width-direction, delayed, static, grapheme, cursor, listener-order, and hot-path controls**
+
+Add seven focused tests using the same setup:
+
+1. **Column growth control, 5 → 10:** start with `<WidthReflowFrame />` at five columns, clear captured writes, emit resize at ten columns, and assert no `clearTerminal` and no width-invalidation `ansiEscapes.eraseLines(6)` complete repaint. Require the existing incremental shrink sequence (including erasure of rows removed by the shorter next frame). The headless-terminal probe showed no duplicated physical rows on growth, so this control prevents an unnecessary full-frame fallback.
+2. **Delayed/missed resize event:** start at ten columns, set `stdout.columns = 5` without emitting `resize`, then call `instance.rerender(<WidthReflowFrame suffix="!" />)`. Require the same synchronized `eraseLines(7)` complete repaint. This proves render-time column comparison repairs the next real render after suspension/idle rather than depending solely on event delivery.
+3. **Wide-grapheme boundary:** render `<Text color="red">aaaa中aaaa</Text>` at ten columns, shrink to five, and require `eraseLines(4)`. The old visible line reflows to three physical rows because `中` cannot start in the final one-cell slot; the trailing baseline is the fourth row. This rejects a naive `Math.ceil(stringWidth(line) / columns)` implementation.
+4. **Static output during shrink:** render `<WidthReflowWithStatic items={[]} />` at ten columns, set columns to five without emitting resize, and rerender with `items={['static']}`. Require the width-aware `eraseLines(7)` clear before the wrapped static write and restored dynamic frame, all within BSU/ESU. This locks the `LogUpdate.clear()` override path rather than only `repaint()`.
+5. **Delayed cursor-only render:** render a fixed ten-column frame with a committed cursor, set columns to five without emitting `resize`, allow an idle turn with no writes, then rerender with only the cursor position changed. Require byte-identical frame output to be repainted with `eraseLines(3)` inside BSU/ESU. This proves width invalidation runs before a cursor-only write can reuse a pre-resize cache.
+6. **`useWindowSize()` follow-up commit:** render a fixed-width frame whose width and text length come from `useWindowSize()`, with a committed cursor. Shrink 10 → 5 and let normal listener order run. Ink's listener first paints an `XXXXXXXXXX` intermediate frame at five columns; the hook listener then commits `XXXXX`. Require the final frame write—not merely the first resize repaint—to contain `eraseLines(3)` and strip to exactly `XXXXX\n`. An isolated `@xterm/headless` run must fail before the fix with two visible `XXXXX` rows and pass afterward with one.
+7. **Ordinary-frame hot path:** invoke `renderInteractiveFrame()` for an unchanged-width, byte-identical physical frame while a stubbed `Intl.Segmenter.segment()` throws. The call must not throw. `wrap-ansi` uses that segmenter, so this deterministically proves ordinary frames do not re-wrap the prior output. The naive always-measure implementation must fail this test.
+
+For resize cases, call `waitUntilRenderFlush()` and register unmount/wait teardown. For the five shrink invalidations, assert BSU precedes erase/repaint and ESU follows it.
+
+- [ ] **Step 4: Run the new regressions and verify they fail**
+
+Run:
+
+```bash
+npm exec -- ava test/log-update.tsx --match='*physical erase override*'
+npm exec -- ava test/render.tsx --match='incremental column*' --match='incremental delayed*' --match='*after public clear*' --match='*wide-grapheme*' --match='*resize invalidation*' --match='*skips terminal reflow measurement*'
+```
+
+Expected: FAIL overall. `LogUpdate` does not accept erase options; shrinking eagerly emits cached `eraseLines(4)` before the synchronized render; a changed narrower width discovered without `resize` is not treated as invalidation; a cursor-only delayed render can reuse the pre-resize cache; an override after public `clear()` can erase unrelated rows; no-write resize metadata can resurrect an absent frame; stdout restoration can fail to restore physical-frame tracking; the static branch erases only cached logical rows; and wide-glyph physical height is not calculated. After the first width-aware repaint implementation, the `useWindowSize()` case must still fail because the hook's second commit takes the logical diff path and leaves a wrapped row behind. The width-growth control should already pass and must remain incremental.
+
+- [ ] **Step 5: Add the internal physical erase override**
+
+In `src/log-update.ts`, add one shared internal options type and extend only the internal callable contract:
+
+```ts
+type EraseOptions = {
+	eraseLineCount?: number;
+};
+
+export type LogUpdate = {
+	clear: (options?: EraseOptions) => void;
+	done: () => void;
+	repaint: (str: string, options?: EraseOptions) => boolean;
+	// Existing members unchanged.
+};
+
+const getEraseLineCount = (
+	cachedLineCount: number,
+	options?: EraseOptions,
+): number =>
+	cachedLineCount === 0
+		? 0
+		: (options?.eraseLineCount ?? cachedLineCount);
+```
+
+For standard rendering, thread options into forced `writeFrame()` calls. For incremental rendering, use the override directly in `repaint()`. In both implementations, use it in `clear()` as well:
+
+```ts
+ansiEscapes.eraseLines(getEraseLineCount(cachedLineCount, options))
+```
+
+Do not use the override for `buildReturnToBottomPrefix()`: xterm probing confirmed resize preserves the committed cursor's distance to the post-frame baseline. The override changes only how many physical rows are erased after reaching that baseline. Ignore it when the cached line count is zero, because `clear()`/`reset()` means no physical frame remains to erase. After repaint, cache `str.split('\n')` normally so subsequent updates are incremental.
+
+- [ ] **Step 6: Derive the previous frame's row count at current columns**
+
+Place this pure helper near the existing render predicates in `src/ink.tsx` (the file already imports `wrap-ansi`):
+
+```ts
+const getReflowedLineCount = (output: string, columns: number): number => {
+	if (output === '') {
+		return 0;
+	}
+
+	return wrapAnsi(output, columns, {
+		trim: false,
+		hard: true,
+		wordWrap: false,
+	}).split('\n').length;
+};
+```
+
+`wrap-ansi` invokes wrapping separately for every existing newline, so Ink's hard row boundaries remain hard. `wordWrap: false` models terminal character-cell wrapping rather than semantic word wrapping. Its existing `string-width` integration handles SGR/OSC sequences and wide graphemes.
+
+Classifying the newly written frame only needs a boolean, not an exact physical row count. Use the existing `widest-line` dependency so this cold path does not pay for a second complete `wrap-ansi` pass:
+
+```ts
+const isOutputSoftWrapped = (output: string, columns: number): boolean =>
+	output !== '' && widestLine(output) > columns;
+```
+
+Keep `getReflowedLineCount()` for the previous frame's erase override, where the exact grapheme-aware physical row count is required.
+
+- [ ] **Step 7: Replace eager resize clearing with render-time invalidation**
+
+Change `resized()` so it does not erase output or reset either cached output string:
+
+```ts
+resized = () => {
+	const currentWidth = getWindowSize(this.options.stdout).columns;
+	this.calculateLayout();
+	this.onRender();
+	// Keep this after onRender so renderInteractiveFrame sees the prior width.
+	this.lastTerminalWidth = currentWidth;
+};
+```
+
+In `renderInteractiveFrame()`, read dimensions once and classify physical invalidation from cached frame metadata. Do not consume invalidation merely because `lastTerminalWidth` advanced: an intermediate frame written from stale width-dependent React state can already be soft-wrapped at the current columns. Equally, do not discover that fact by re-wrapping the whole frame on every render.
+
+Add `lastPhysicalFrameWasSoftWrapped`, initialized and cleared with `hasPhysicalFrame`. Classify every committed physical frame with the cheap width predicate, then keep exact reflow measurement behind the cold-path predicate:
+
+```ts
+const hadPhysicalFrame = this.hasPhysicalFrame;
+const previousOutputHeight = hadPhysicalFrame ? this.lastOutputHeight : 0;
+const hasCachedPhysicalOutput =
+	hadPhysicalFrame && this.lastOutputToRender !== '';
+const columnsDecreased =
+	Boolean(isTty) && terminalWidth < this.lastTerminalWidth;
+const outputWillRender = hasStaticOutput || this.log.willRender(outputToRender);
+const shouldClassifyNextFrame =
+	Boolean(isTty) && (columnsDecreased || outputWillRender);
+const nextFrameIsSoftWrapped =
+	shouldClassifyNextFrame && isOutputSoftWrapped(outputToRender, terminalWidth);
+const shouldRepairReflow =
+	Boolean(isTty) &&
+	hasCachedPhysicalOutput &&
+	(columnsDecreased ||
+		((this.lastPhysicalFrameWasSoftWrapped || nextFrameIsSoftWrapped) &&
+			outputWillRender));
+const reflowedLineCount = shouldRepairReflow
+	? getReflowedLineCount(this.lastOutputToRender, terminalWidth)
+	: 0;
+const reflowEraseOptions = shouldRepairReflow
+	? {eraseLineCount: reflowedLineCount}
+	: undefined;
+```
+
+After a physical write, update the cached flag even when the frame was initially rendered wider than the terminal:
+
+```ts
+if (didWriteFrame) {
+	this.lastPhysicalFrameWasSoftWrapped = shouldClassifyNextFrame
+		? nextFrameIsSoftWrapped
+		: Boolean(isTty) && isOutputSoftWrapped(outputToRender, terminalWidth);
+}
+```
+
+Apply the same classification in the direct `clearTerminal` branch and after `restoreLastOutput()`. Before public `clear()` or external stdout/stderr output calls `LogUpdate.clear()`, use `getReflowedLineCount(lastOutputToRender, currentColumns)` as an erase override when the displayed frame is currently soft-wrapped. Public `clear()` resets the physical markers only after that complete erase. `columnsDecreased` forces the first repaint even when bytes are unchanged; the cached flag carries invalidation into delayed width-dependent follow-up commits and protects initially overwide frames; ordinary valid updates perform no `wrap-ansi` or full-output split work.
+
+Apply the options without changing branch ownership:
+
+- Pass `previousOutputHeight` rather than raw `lastOutputHeight` to the row/fullscreen predicates. Existing `shouldClearTerminal` still wins when its established overflow/content fallback requires a full clear for a physical frame; record `lastTerminalWidth`, set `hasPhysicalFrame = true`, and classify the newly written frame before that branch returns.
+- In the static-output branch, call `this.log.clear(reflowEraseOptions)` before writing static output.
+- Otherwise, enter the synchronized repaint branch when either the row predicate is true or `reflowEraseOptions` exists, and call `this.log.repaint(outputToRender, reflowEraseOptions)`. Column growth must not enter this branch solely because columns changed.
+- Keep ordinary `this.throttledLog(outputToRender)` only when neither physical invalidation applies.
+- Track `didWriteFrame` across the static, repaint, and ordinary render branches. At the common metadata update, always retain the latest React height/dimensions and set `hasPhysicalFrame = hadPhysicalFrame || didWriteFrame`.
+- Public `clear()` has set both physical markers false, so neither row/fullscreen classification nor column reflow treats the erased frame as present. A byte-identical resize that emits no write preserves false; `restoreLastOutput()` changes it back to true and classifies the restored bytes once.
+
+The erase and complete frame must remain inside the existing BSU/ESU wrapper. There must be no separate `log.clear()` write before BSU and no new `clearTerminal` branch.
+
+- [ ] **Step 8: Update general resize expectations**
+
+In `test/terminal-resize.tsx`, rename width tests/comments that describe the old eager-clear implementation. Preserve their layout/listener assertions, but assert the resulting transition:
+
+- decreasing width performs a complete repaint and does not emit `clearTerminal`;
+- increasing width stays on the existing incremental shrink/diff path and does not emit `clearTerminal` or a complete width-invalidation repaint;
+- consecutive changes each repaint once;
+- a later content update still renders normally.
+
+Do not add `@xterm/headless` as a package dependency. The isolated diagnostic probes establish both physical-screen failures; committed tests should lock the deterministic erase/repaint protocol, including the final width-hook commit.
+
+- [ ] **Step 9: Run the new tests and existing resize coverage**
+
+Run:
+
+```bash
+npm exec -- ava test/log-update.tsx --match='*physical erase override*'
+npm exec -- ava test/render.tsx --match='incremental column*' --match='incremental delayed*' --match='*wide-grapheme*' --match='*resize invalidation*'
+npm exec ava test/terminal-resize.tsx
+```
+
+Expected: PASS. Both renderers honor erase overrides; narrow/delayed/cursor-only/wide cases emit synchronized complete repaints with exact erase counts; a soft-wrapped resize-listener intermediate frame remains invalid until the `useWindowSize()` follow-up commit repaints it; width growth remains incremental; and general resize behavior remains intact without `clearTerminal`.
+
+- [ ] **Step 10: Run all focused rendering tests**
+
+Run:
+
+```bash
+npm exec ava test/cursor-helpers.tsx test/log-update.tsx test/render.tsx test/terminal-resize.tsx
+npm exec -- ava test/cursor.tsx --match='!*suspended concurrent render*'
+npm run typecheck
+```
+
+Expected: PASS. Existing cursor, clear, row-viewport, issue-450, and terminal-resize regressions remain green.
+
+- [ ] **Step 11: Conditional commit checkpoint**
+
+Only with explicit commit approval:
+
+```bash
+git add src/log-update.ts src/ink.tsx test/log-update.tsx test/render.tsx test/terminal-resize.tsx docs/superpowers/specs/2026-08-09-incremental-rendering-state-repair-design.md docs/superpowers/plans/2026-08-09-incremental-rendering-state-repair.md
+git commit -m "fix: repaint terminal column reflow"
+```
+
+---
+
+
+### Task 8: Complete package verification and review
 
 **Files:**
 - Verify only: `src/cursor-helpers.ts`
@@ -1562,9 +1899,10 @@ Run:
 
 ```bash
 npm test
+npm exec ava
 ```
 
-Expected: typecheck remains clean and no new planned-file lint diagnostics appear. The command may stop at the documented pre-existing lint failures. Focused AVA files from Step 1, not the unrelated 57-failure concurrent-test baseline, are the blocking behavior gate approved for this implementation.
+Expected: typecheck remains clean and no new planned-file lint diagnostics appear. `npm test` may stop at the documented pre-existing lint failures, so run AVA directly as well; it may retain the documented 57-failure concurrent-test baseline. Focused AVA files from Step 1 are the blocking behavior gate, and every new rendering/resize regression must also pass when encountered in the complete run.
 
 - [ ] **Step 5: Inspect the nested repository diff and whitespace**
 
@@ -1590,18 +1928,19 @@ Review the final diff for:
 
 - no new `clearTerminal` call sites or new clear invocations on pure viewport growth;
 - every direct terminal-clear payload exactly matches the `outputToRender` representation passed to `log.sync()`;
-- no public API changes beyond the internal `LogUpdate.repaint()` contract;
+- no public API changes; the erase-count options remain internal to `LogUpdate.clear()`/`repaint()`;
 - complete handling of trailing and non-trailing cursor baselines;
 - persistent cursor intent cleared only by explicit `undefined`, teardown, or fresh instance creation;
 - cache-only `reset()` remains non-writing and documents its external-reset precondition;
-- BSU before repaint and ESU after repaint;
-- unchanged issue-450 clear counts.
+- column decreases are detected from frame metadata, erase the previous frame's physical height at current columns, and keep erase/repaint between BSU and ESU; column growth stays incremental;
+- static-output insertion receives the same width-aware erase override;
+- unchanged-column frames remain surgical and unchanged issue-450 clear counts remain intact.
 
 - [ ] **Step 7: Conditional final commit checkpoint**
 
 Only with explicit commit approval, stage the exact reviewed files and exclude the pre-existing `package.json` change:
 
 ```bash
-git add src/cursor-helpers.ts src/log-update.ts src/ink.tsx test/cursor-helpers.tsx test/log-update.tsx test/render.tsx docs/superpowers/specs/2026-08-09-incremental-rendering-state-repair-design.md docs/superpowers/plans/2026-08-09-incremental-rendering-state-repair.md
+git add src/cursor-helpers.ts src/log-update.ts src/ink.tsx test/cursor-helpers.tsx test/log-update.tsx test/render.tsx test/terminal-resize.tsx docs/superpowers/specs/2026-08-09-incremental-rendering-state-repair-design.md docs/superpowers/plans/2026-08-09-incremental-rendering-state-repair.md
 git commit -m "fix: keep incremental rendering state aligned with terminal"
 ```

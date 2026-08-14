@@ -1,9 +1,11 @@
 import process from 'node:process';
 import test from 'ava';
 import delay from 'delay';
+import ansiEscapes from 'ansi-escapes';
 import stripAnsi from 'strip-ansi';
 import React from 'react';
 import {render, Box, Text, useWindowSize} from '../src/index.js';
+import {bsu, esu} from '../src/write-synchronized.js';
 import createStdout, {type FakeStdout} from './helpers/create-stdout.js';
 
 const getWriteContents = (stdout: FakeStdout): string[] =>
@@ -150,66 +152,102 @@ test.serial(
 	},
 );
 
-test.serial('clear screen when terminal width decreases', async t => {
-	const stdout = createStdout(100);
+test.serial(
+	'terminal width decrease repaints the reflowed frame without clearTerminal',
+	async t => {
+		const stdout = createStdout(100);
 
-	function Test() {
-		return (
-			<Box borderStyle="round">
-				<Text>Hello World</Text>
-			</Box>
+		function Test() {
+			return (
+				<Box borderStyle="round">
+					<Text>Hello World</Text>
+				</Box>
+			);
+		}
+
+		const instance = render(<Test />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		const exitPromise = instance.waitUntilExit();
+		t.teardown(async () => {
+			instance.unmount();
+			await exitPromise;
+		});
+		await instance.waitUntilRenderFlush();
+
+		const initialOutput = stripAnsi(getWriteContents(stdout)[0]!);
+		t.true(initialOutput.includes('Hello World'));
+		t.true(initialOutput.includes('╭'));
+
+		const resizeWriteStart = stdout.getWrites().length;
+		stdout.columns = 50;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const resizeWrites = stdout.getWrites().slice(resizeWriteStart);
+		const repaintChunks = resizeWrites.filter(
+			write =>
+				write.includes(ansiEscapes.eraseLines(7)) &&
+				stripAnsi(write).includes('╭'),
 		);
-	}
-
-	render(<Test />, {stdout});
-
-	const initialOutput = stripAnsi(getWriteContents(stdout)[0]!);
-	t.true(initialOutput.includes('Hello World'));
-	t.true(initialOutput.includes('╭')); // Box border
-
-	// Decrease width - should trigger clear and rerender
-	stdout.columns = 50;
-	stdout.emit('resize');
-	await delay(100);
-
-	// Verify the output was updated for smaller width
-	const lastOutput = stripAnsi(getWriteContents(stdout).at(-1)!);
-	t.true(lastOutput.includes('Hello World'));
-	t.true(lastOutput.includes('╭')); // Box border
-	t.not(initialOutput, lastOutput); // Output should change due to width
-});
-
-test.serial('no screen clear when terminal width increases', async t => {
-	const stdout = createStdout(50);
-
-	function Test() {
-		return (
-			<Box borderStyle="round">
-				<Text>Test</Text>
-			</Box>
+		t.is(repaintChunks.length, 1);
+		t.false(
+			resizeWrites.some(write => write.includes(ansiEscapes.clearTerminal)),
 		);
-	}
 
-	render(<Test />, {stdout});
-
-	const initialOutput = getWriteContents(stdout)[0]!;
-
-	// Increase width - should rerender but not clear
-	stdout.columns = 100;
-	stdout.emit('resize');
-	await delay(100);
-
-	const lastOutput = getWriteContents(stdout).at(-1)!;
-
-	// When increasing width, we don't clear, so we should see eraseLines used for incremental update
-	// But when decreasing, the clear() is called which also uses eraseLines
-	// The key difference: decreasing width triggers an explicit clear before render
-	t.not(stripAnsi(initialOutput), stripAnsi(lastOutput));
-	t.true(stripAnsi(lastOutput).includes('Test'));
-});
+		const repaintIndex = resizeWrites.indexOf(repaintChunks[0]!);
+		t.true(resizeWrites.indexOf(bsu) < repaintIndex);
+		t.true(repaintIndex < resizeWrites.indexOf(esu));
+		t.not(initialOutput, stripAnsi(repaintChunks[0]!));
+	},
+);
 
 test.serial(
-	'consecutive width decreases trigger screen clear each time',
+	'terminal width increase stays incremental without clearTerminal',
+	async t => {
+		const stdout = createStdout(50);
+
+		function Test() {
+			return (
+				<Box borderStyle="round">
+					<Text>Test</Text>
+				</Box>
+			);
+		}
+
+		const instance = render(<Test />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		const exitPromise = instance.waitUntilExit();
+		t.teardown(async () => {
+			instance.unmount();
+			await exitPromise;
+		});
+		await instance.waitUntilRenderFlush();
+
+		const initialOutput = stripAnsi(getWriteContents(stdout)[0]!);
+		const resizeWriteStart = stdout.getWrites().length;
+		stdout.columns = 100;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const resizeWrites = stdout.getWrites().slice(resizeWriteStart);
+		const resizeOutput = resizeWrites.join('');
+		t.false(resizeOutput.includes(ansiEscapes.clearTerminal));
+		t.false(resizeOutput.includes(ansiEscapes.eraseLines(4)));
+		t.true(stripAnsi(resizeOutput).includes('Test'));
+		t.not(initialOutput, stripAnsi(resizeOutput));
+	},
+);
+
+test.serial(
+	'consecutive terminal width decreases each repaint exactly once',
 	async t => {
 		const stdout = createStdout(100);
 
@@ -221,66 +259,105 @@ test.serial(
 			);
 		}
 
-		render(<Test />, {stdout});
+		const instance = render(<Test />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		const exitPromise = instance.waitUntilExit();
+		t.teardown(async () => {
+			instance.unmount();
+			await exitPromise;
+		});
+		await instance.waitUntilRenderFlush();
 
-		const initialOutput = stripAnsi(getWriteContents(stdout)[0]!);
-
-		// First decrease
+		const firstResizeStart = stdout.getWrites().length;
 		stdout.columns = 80;
 		stdout.emit('resize');
-		await delay(100);
+		await instance.waitUntilRenderFlush();
+		const firstResizeWrites = stdout.getWrites().slice(firstResizeStart);
 
-		const afterFirstDecrease = stripAnsi(getWriteContents(stdout).at(-1)!);
-		t.not(initialOutput, afterFirstDecrease);
-		t.true(afterFirstDecrease.includes('Content'));
+		const firstRepaints = firstResizeWrites.filter(
+			write =>
+				write.includes(ansiEscapes.eraseLines(7)) &&
+				stripAnsi(write).includes('Content'),
+		);
+		t.is(firstRepaints.length, 1);
+		t.false(
+			firstResizeWrites.some(write =>
+				write.includes(ansiEscapes.clearTerminal),
+			),
+		);
+		const firstRepaintIndex = firstResizeWrites.indexOf(firstRepaints[0]!);
+		t.true(firstResizeWrites.indexOf(bsu) < firstRepaintIndex);
+		t.true(firstRepaintIndex < firstResizeWrites.indexOf(esu));
 
-		// Second decrease
+		const secondResizeStart = stdout.getWrites().length;
 		stdout.columns = 60;
 		stdout.emit('resize');
-		await delay(100);
+		await instance.waitUntilRenderFlush();
+		const secondResizeWrites = stdout.getWrites().slice(secondResizeStart);
 
-		const afterSecondDecrease = stripAnsi(getWriteContents(stdout).at(-1)!);
-		t.not(afterFirstDecrease, afterSecondDecrease);
-		t.true(afterSecondDecrease.includes('Content'));
+		const secondRepaints = secondResizeWrites.filter(
+			write =>
+				write.includes(ansiEscapes.eraseLines(7)) &&
+				stripAnsi(write).includes('Content'),
+		);
+		t.is(secondRepaints.length, 1);
+		t.false(
+			secondResizeWrites.some(write =>
+				write.includes(ansiEscapes.clearTerminal),
+			),
+		);
+		const secondRepaintIndex = secondResizeWrites.indexOf(secondRepaints[0]!);
+		t.true(secondResizeWrites.indexOf(bsu) < secondRepaintIndex);
+		t.true(secondRepaintIndex < secondResizeWrites.indexOf(esu));
 	},
 );
 
-test.serial('width decrease clears lastOutput to force rerender', async t => {
-	const stdout = createStdout(100);
+test.serial(
+	'width-decrease repaint leaves later updates incremental',
+	async t => {
+		const stdout = createStdout(100);
 
-	function Test() {
-		return (
-			<Box borderStyle="round">
-				<Text>Test Content</Text>
-			</Box>
+		function Test({content}: {readonly content: string}) {
+			return (
+				<Box borderStyle="round">
+					<Text>{content}</Text>
+				</Box>
+			);
+		}
+
+		const instance = render(<Test content="Test Content" />, {
+			stdout,
+			interactive: true,
+			incrementalRendering: true,
+			maxFps: 1000,
+		});
+		const exitPromise = instance.waitUntilExit();
+		t.teardown(async () => {
+			instance.unmount();
+			await exitPromise;
+		});
+		await instance.waitUntilRenderFlush();
+
+		stdout.columns = 50;
+		stdout.emit('resize');
+		await instance.waitUntilRenderFlush();
+
+		const updateWriteStart = stdout.getWrites().length;
+		instance.rerender(<Test content="Updated Content" />);
+		await instance.waitUntilRenderFlush();
+
+		const updateWrites = stdout.getWrites().slice(updateWriteStart);
+		const updateChunk = updateWrites.find(write =>
+			stripAnsi(write).includes('Updated Content'),
 		);
-	}
-
-	const {rerender} = render(<Test />, {stdout});
-
-	const initialOutput = stripAnsi(getWriteContents(stdout)[0]!);
-
-	// Decrease width - with a border, this will definitely change the output
-	stdout.columns = 50;
-	stdout.emit('resize');
-	await delay(100);
-
-	const afterResizeOutput = stripAnsi(getWriteContents(stdout).at(-1)!);
-
-	// Outputs should be different because the border width changed
-	t.not(initialOutput, afterResizeOutput);
-	t.true(afterResizeOutput.includes('Test Content'));
-
-	// Now try to rerender with a different component
-	rerender(
-		<Box borderStyle="round">
-			<Text>Updated Content</Text>
-		</Box>,
-	);
-	await delay(100);
-
-	// Verify content was updated
-	t.true(
-		stripAnsi(getWriteContents(stdout).at(-1)!).includes('Updated Content'),
-	);
-});
+		t.truthy(updateChunk);
+		t.false(stripAnsi(updateChunk!).includes('╭'));
+		t.false(
+			updateWrites.some(write => write.includes(ansiEscapes.clearTerminal)),
+		);
+	},
+);
