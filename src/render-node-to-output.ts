@@ -61,12 +61,23 @@ type BoundsInfo = {
 	bottom: number;
 };
 
+export type PaintState = {
+	epoch: number;
+	nextIndex: number;
+};
+
 type RenderContext = {
 	output: Output;
 	position: PositionInfo;
 	transformers: OutputTransformer[];
 	scrollContext: ScrollContext;
 	parentBounds: BoundsInfo;
+	paintState: PaintState;
+};
+
+const markPainted = (node: DOMElement, state: PaintState): void => {
+	node.internal_paintEpoch = state.epoch;
+	node.internal_paintIndex = state.nextIndex++;
 };
 
 const calculateStickyPosition = (
@@ -106,7 +117,14 @@ const calculateStickyPosition = (
 };
 
 const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
-	const {output, position, transformers, scrollContext, parentBounds} = context;
+	const {
+		output,
+		position,
+		transformers,
+		scrollContext,
+		parentBounds,
+		paintState,
+	} = context;
 	const {x: offsetX, y: offsetY} = position;
 	const {top: parentTop, bottom: parentBottom} = parentBounds;
 	const {yogaNode} = node;
@@ -135,6 +153,8 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 		return;
 	}
 
+	markPainted(node, paintState);
+
 	let newTransformers = transformers;
 	if (typeof node.internal_transform === 'function') {
 		newTransformers = [node.internal_transform, ...transformers];
@@ -157,6 +177,7 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 			let text = squashTextNodes(child);
 
 			if (text.length > 0) {
+				markPainted(child, paintState);
 				const currentWidth = widestLine(text);
 				const maxWidth = getMaxWidth(childYoga);
 
@@ -187,6 +208,7 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 				offsetY: y,
 				transformers: newTransformers,
 				skipStaticElements: false,
+				paintState,
 			});
 		}
 	}
@@ -271,6 +293,7 @@ const renderNodeToOutput = (
 		scrollContext?: ScrollContext;
 		parentTop?: number;
 		parentBottom?: number;
+		paintState: PaintState;
 	},
 ) => {
 	const {
@@ -281,6 +304,7 @@ const renderNodeToOutput = (
 		scrollContext,
 		parentTop = -Infinity,
 		parentBottom = Infinity,
+		paintState,
 	} = options;
 
 	if (skipStaticElements && node.internal_static) {
@@ -342,6 +366,8 @@ const renderNodeToOutput = (
 
 			return;
 		}
+
+		markPainted(node, paintState);
 
 		let clipped = false;
 
@@ -426,6 +452,7 @@ const renderNodeToOutput = (
 					scrollContext: newScrollContext,
 					parentTop: childParentTop,
 					parentBottom: childParentBottom,
+					paintState,
 				});
 			}
 
@@ -440,6 +467,7 @@ const renderNodeToOutput = (
 							top: sticky.parentTop,
 							bottom: sticky.parentBottom,
 						},
+						paintState,
 					});
 				}
 			}

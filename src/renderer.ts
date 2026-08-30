@@ -1,5 +1,6 @@
 import renderNodeToOutput, {
 	renderNodeToScreenReaderOutput,
+	type PaintState,
 } from './render-node-to-output.js';
 import Output from './output.js';
 import {paintSelection} from './paint-selection.js';
@@ -11,6 +12,13 @@ type Result = {
 	outputHeight: number;
 	staticOutput: string;
 };
+
+let nextPaintEpoch = 0;
+
+const createPaintState = (): PaintState => ({
+	epoch: ++nextPaintEpoch,
+	nextIndex: 0,
+});
 
 const renderer = (
 	node: DOMElement,
@@ -47,6 +55,7 @@ const renderer = (
 
 		renderNodeToOutput(node, output, {
 			skipStaticElements: true,
+			paintState: createPaintState(),
 		});
 
 		let staticOutput;
@@ -59,6 +68,7 @@ const renderer = (
 
 			renderNodeToOutput(node.staticNode, staticOutput, {
 				skipStaticElements: false,
+				paintState: createPaintState(),
 			});
 		}
 
