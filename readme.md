@@ -422,6 +422,13 @@ const Example = () => (
 render(<Example />);
 ```
 
+#### Ref methods
+
+A ref passed to `<Box>` exposes its DOM element together with imperative layout
+and scrolling methods. `getPaintOrder()` returns the renderer-owned `{epoch,
+index}` for the current frame, or `undefined` when the box was not painted in
+that frame. A larger index in the same epoch means the box was painted later.
+
 #### Dimensions
 
 ##### width

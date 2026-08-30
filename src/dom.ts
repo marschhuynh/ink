@@ -75,6 +75,10 @@ export type DOMElement = {
 	internal_layoutListeners?: Set<LayoutListener>;
 	internal_scrollOffset?: {x: number; y: number};
 	internal_scrollVersion?: number;
+	// Renderer-owned frame metadata. A node is a valid pointer target only when
+	// its paint epoch matches the current root epoch.
+	internal_paintEpoch?: number;
+	internal_paintIndex?: number;
 	// The absolute position at which a `position: "sticky"` node was last drawn
 	// by `renderStickyNode`. While pinned this differs from the natural
 	// (yoga-ancestor-walk) position; `getBounds` prefers it so hit-testing lands

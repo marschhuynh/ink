@@ -171,3 +171,129 @@ test('zIndex controls paint order for overlapping positioned boxes', t => {
 
 	t.is(output, 'TOP');
 });
+
+test('paint order follows zIndex instead of declaration order', async t => {
+	const stdout = createStdout(100);
+	const topRef = React.createRef<BoxRef>();
+	const lowRef = React.createRef<BoxRef>();
+	const instance = render(
+		<Box width={3} height={1}>
+			<Box ref={topRef} position="absolute" top={0} left={0} zIndex={10}>
+				<Text>TOP</Text>
+			</Box>
+			<Box ref={lowRef} position="absolute" top={0} left={0} zIndex={0}>
+				<Text>LOW</Text>
+			</Box>
+		</Box>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	const topOrder = topRef.current?.getPaintOrder();
+	const lowOrder = lowRef.current?.getPaintOrder();
+	t.truthy(topOrder);
+	t.truthy(lowOrder);
+	t.is(topOrder?.epoch, lowOrder?.epoch);
+	t.true((topOrder?.index ?? -1) > (lowOrder?.index ?? -1));
+});
+
+test('paint order keeps a high-z descendant below a later parent sibling', async t => {
+	const stdout = createStdout(100);
+	const descendantRef = React.createRef<BoxRef>();
+	const siblingRef = React.createRef<BoxRef>();
+	const instance = render(
+		<Box width={3} height={1}>
+			<Box position="absolute" top={0} left={0} zIndex={0}>
+				<Box ref={descendantRef} zIndex={100}>
+					<Text>LOW</Text>
+				</Box>
+			</Box>
+			<Box ref={siblingRef} position="absolute" top={0} left={0} zIndex={10}>
+				<Text>TOP</Text>
+			</Box>
+		</Box>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	const descendantOrder = descendantRef.current?.getPaintOrder();
+	const siblingOrder = siblingRef.current?.getPaintOrder();
+	t.truthy(descendantOrder);
+	t.truthy(siblingOrder);
+	t.is(descendantOrder?.epoch, siblingOrder?.epoch);
+	t.true((descendantOrder?.index ?? -1) < (siblingOrder?.index ?? -1));
+});
+
+test('paint order records a sticky header after the row it covers', async t => {
+	const stdout = createStdout(100);
+	const containerRef = React.createRef<BoxRef>();
+	const headerRef = React.createRef<BoxRef>();
+	const coveredRowRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<Box
+			ref={containerRef}
+			width={20}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box ref={headerRef} position="sticky" top={0} flexShrink={0}>
+				<Text>HEADER</Text>
+			</Box>
+			{Array.from({length: 10}, (_, index) => (
+				<Box
+					key={index}
+					ref={index === 4 ? coveredRowRef : undefined}
+					flexShrink={0}
+				>
+					<Text>Item {index}</Text>
+				</Box>
+			))}
+		</Box>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	containerRef.current?.scrollTo({y: 5});
+	await instance.waitUntilRenderFlush();
+
+	const headerOrder = headerRef.current?.getPaintOrder();
+	const coveredRowOrder = coveredRowRef.current?.getPaintOrder();
+	t.truthy(headerOrder);
+	t.truthy(coveredRowOrder);
+	t.is(headerOrder?.epoch, coveredRowOrder?.epoch);
+	t.true((headerOrder?.index ?? -1) > (coveredRowOrder?.index ?? -1));
+});
+
+test('paint order hides an element that was not painted in the current frame', async t => {
+	const stdout = createStdout(100);
+	const ref = React.createRef<BoxRef>();
+	const frame = (display: 'flex' | 'none') => (
+		<Box width={4} height={1}>
+			<Box ref={ref} display={display}>
+				<Text>item</Text>
+			</Box>
+		</Box>
+	);
+	const instance = render(frame('flex'), {stdout, debug: true});
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	t.truthy(ref.current?.getPaintOrder());
+	instance.rerender(frame('none'));
+	await instance.waitUntilRenderFlush();
+
+	t.is(ref.current?.getPaintOrder(), undefined);
+});
