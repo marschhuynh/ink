@@ -14,12 +14,18 @@ import {type DOMElement} from '../dom.js';
 import {accessibilityContext} from './AccessibilityContext.js';
 import {backgroundContext} from './BackgroundContext.js';
 
+export type PaintOrder = {
+	epoch: number;
+	index: number;
+};
+
 export type BoxRef = DOMElement & {
 	scrollTo: (options: {x?: number; y?: number}) => void;
 	getScrollPosition: () => {x: number; y: number};
 	scrollToTop: () => void;
 	scrollToBottom: () => void;
 	getBounds: () => {x: number; y: number; width: number; height: number};
+	getPaintOrder: () => PaintOrder | undefined;
 };
 
 export type Props = Except<Styles, 'textWrap'> & {
@@ -211,6 +217,25 @@ const Box = forwardRef<BoxRef, PropsWithChildren<Props>>(
 					}
 
 					return {x, y, width, height};
+				},
+				getPaintOrder() {
+					let root: DOMElement = element;
+					while (root.parentNode) {
+						root = root.parentNode;
+					}
+
+					if (
+						element.internal_paintEpoch === undefined ||
+						element.internal_paintIndex === undefined ||
+						element.internal_paintEpoch !== root.internal_paintEpoch
+					) {
+						return undefined;
+					}
+
+					return {
+						epoch: element.internal_paintEpoch,
+						index: element.internal_paintIndex,
+					};
 				},
 			});
 		}, []);
