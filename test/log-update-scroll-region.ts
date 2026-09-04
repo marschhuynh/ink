@@ -4,6 +4,8 @@ import logUpdate from '../src/log-update.js';
 import createStdout from './helpers/create-stdout.js';
 
 const csi = '\u001B[';
+const csiDeleteLines = new RegExp(`${String.fromCodePoint(0x1b)}\\[\\d*M`);
+const csiInsertLines = new RegExp(`${String.fromCodePoint(0x1b)}\\[\\d*L`);
 
 const secondWrite = (stdout: ReturnType<typeof createStdout>): string =>
 	stdout.get();
@@ -68,6 +70,62 @@ test('incremental scroll region - centered interior shift does not IL/DL at fram
 	t.false(write.includes('b5'));
 	// Newly exposed edge line is rewritten.
 	t.true(write.includes('b9'));
+	// IL/DL at the body also moves the footer; the ordinary diff must restore it.
+	t.true(
+		write.includes('FOOT'),
+		`expected FOOT to be rewritten after CSI 1 M, got: ${JSON.stringify(write)}`,
+	);
+});
+
+test('incremental scroll region - centered interior shift down emits insert-lines and restores footer', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+
+	render(
+		['HEAD', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'FOOT'].join('\n'),
+	);
+	render(
+		['HEAD', 'b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'FOOT'].join('\n'),
+	);
+
+	const write = secondWrite(stdout);
+	t.true(
+		write.includes(`${csi}1L`),
+		`expected CSI 1 L at the interior body, got: ${JSON.stringify(write)}`,
+	);
+	t.false(write.includes('HEAD'));
+	t.false(write.includes('b4'));
+	t.true(write.includes('b0'));
+	t.true(
+		write.includes('FOOT'),
+		`expected FOOT to be rewritten after CSI 1 L, got: ${JSON.stringify(write)}`,
+	);
+});
+
+test('incremental scroll region - changed prefix rejects shift and rewrites chrome', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+
+	render(
+		['HEAD', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'FOOT'].join('\n'),
+	);
+	render(
+		['HEAD2', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'b9', 'FOOT'].join(
+			'\n',
+		),
+	);
+
+	const write = secondWrite(stdout);
+	t.notRegex(
+		write,
+		csiDeleteLines,
+		`changed HEAD must not take the interior IL/DL path, got: ${JSON.stringify(write)}`,
+	);
+	t.notRegex(write, csiInsertLines);
+	t.true(
+		write.includes('HEAD2'),
+		`expected changed HEAD to be rewritten, got: ${JSON.stringify(write)}`,
+	);
 });
 
 test('incremental scroll region - below-threshold change stays byte-identical to the legacy diff', t => {
@@ -78,8 +136,8 @@ test('incremental scroll region - below-threshold change stays byte-identical to
 	render(['a', 'X', 'Y', 'Z', 'e', 'f'].join('\n'));
 
 	const write = secondWrite(stdout);
-	t.false(write.includes(`${csi}M`));
-	t.false(write.includes(`${csi}L`));
+	t.notRegex(write, csiDeleteLines);
+	t.notRegex(write, csiInsertLines);
 	t.is(
 		write,
 		'\u001B[5A\u001B[E\u001B[1GX\u001B[K\n\u001B[1GY\u001B[K\n\u001B[1GZ\u001B[K\n\u001B[E',
@@ -103,8 +161,8 @@ test('incremental scroll region - cache correctness after shift', t => {
 		thirdWrite.includes('r5\n'),
 		`unchanged r5 must not be rewritten, got: ${JSON.stringify(thirdWrite)}`,
 	);
-	t.false(thirdWrite.includes(`${csi}M`));
-	t.false(thirdWrite.includes(`${csi}L`));
+	t.notRegex(thirdWrite, csiDeleteLines);
+	t.notRegex(thirdWrite, csiInsertLines);
 });
 
 test('incremental scroll region - height change skips scroll path', t => {
@@ -115,8 +173,8 @@ test('incremental scroll region - height change skips scroll path', t => {
 	render(['r3', 'r4', 'r5', 'r6'].join('\n'));
 
 	const write = secondWrite(stdout);
-	t.false(write.includes(`${csi}M`));
-	t.false(write.includes(`${csi}L`));
+	t.notRegex(write, csiDeleteLines);
+	t.notRegex(write, csiInsertLines);
 });
 
 test('incremental scroll region - escape hatch keeps legacy bytes for a pure shift', t => {

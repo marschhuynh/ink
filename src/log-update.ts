@@ -69,6 +69,20 @@ type ScrollShift = {
 const blankLines = (count: number): string[] =>
 	Array.from({length: count}, () => '');
 
+const prefixUnchanged = (
+	previousLines: string[],
+	nextLines: string[],
+	start: number,
+): boolean => {
+	for (let index = 0; index < start; index++) {
+		if (nextLines[index] !== previousLines[index]) {
+			return false;
+		}
+	}
+
+	return true;
+};
+
 // Detect whether `nextLines` is `previousLines` shifted vertically by k rows
 // with at most a small band of changed edge lines. Only exact whole-line
 // equality counts (same semantics as the existing positional diff).
@@ -103,7 +117,12 @@ const detectScrollShift = (
 			upLast = i;
 		}
 
-		if (up >= required && upFirst >= 0 && upLast - upFirst + 1 >= required) {
+		if (
+			up >= required &&
+			upFirst >= 0 &&
+			upLast - upFirst + 1 >= required &&
+			prefixUnchanged(previousLines, nextLines, upFirst)
+		) {
 			return {rows, start: upFirst};
 		}
 
@@ -129,7 +148,8 @@ const detectScrollShift = (
 		if (
 			down >= required &&
 			downFirst >= 0 &&
-			downLast - downFirst + 1 >= required
+			downLast - downFirst + 1 >= required &&
+			prefixUnchanged(previousLines, nextLines, downFirst - rows)
 		) {
 			return {rows: -rows, start: downFirst - rows};
 		}

@@ -226,6 +226,7 @@ export default class Output {
 	get(options?: GetOptions): {
 		output: string;
 		height: number;
+		maxVisualWidth: number;
 		plainRows?: string[];
 		maskRows?: boolean[][];
 	} {
@@ -304,7 +305,7 @@ export default class Output {
 							// Fully-inside writes are the common case for culled VLBox
 							// rows. slice-ansi still tokenizes the whole string, which
 							// dominates paint of truecolor modal/transcript frames.
-							if (from === 0 && to === width) {
+							if (width > 0 && from === 0 && to === width) {
 								return line;
 							}
 
@@ -429,6 +430,7 @@ export default class Output {
 		// before it is converted to ANSI.
 		options?.paint?.(output, plainRows!, mask);
 
+		let maxVisualWidth = 0;
 		const generatedOutput = output
 			.map(line => {
 				// See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
@@ -437,6 +439,7 @@ export default class Output {
 					lineWithoutEmptyItems,
 					this.width,
 				);
+				maxVisualWidth = Math.max(maxVisualWidth, trimmedLine.length);
 
 				return styledCharsToString(trimmedLine);
 			})
@@ -445,6 +448,7 @@ export default class Output {
 		return {
 			output: generatedOutput,
 			height: output.length,
+			maxVisualWidth,
 			plainRows,
 			maskRows:
 				(options?.capturePlainRows ?? options?.paint) ? mask : undefined,
