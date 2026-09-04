@@ -175,3 +175,31 @@ test('VLBox root count tracks committed mounts removals and reorders', async t =
 	t.is(rootOf(ref.current!).internal_viewportCullingCount ?? 0, 0);
 	instance.unmount();
 });
+
+test('appending a host text child to a connected Text does not throw', async t => {
+	const stdout = createStdout(30);
+
+	function Test({text}: {readonly text?: string}) {
+		return <Text>{text ?? false}</Text>;
+	}
+
+	const instance = render(<Test />, {
+		stdout,
+		debug: true,
+	});
+	await instance.waitUntilRenderFlush();
+
+	instance.rerender(<Test text="hello" />);
+	await instance.waitUntilRenderFlush();
+
+	const contentWrites = stdout
+		.getWrites()
+		.filter(
+			write =>
+				write !== '' &&
+				!write.startsWith('\u001B[?25') &&
+				!write.startsWith('\u001B[?2026'),
+		);
+	t.is(contentWrites.at(-1), 'hello');
+	instance.unmount();
+});

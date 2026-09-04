@@ -118,8 +118,13 @@ const adjustViewportCount = (
 
 const appendChildWithViewportCount = (
 	parent: DOMElement,
-	child: DOMElement,
+	child: DOMNode,
 ): void => {
+	if (child.nodeName === '#text') {
+		appendChildNode(parent, child);
+		return;
+	}
+
 	const oldRoot = connectedRoot(child);
 	appendChildNode(parent, child);
 	const newRoot = connectedRoot(child);
