@@ -135,10 +135,7 @@ export const incrementLayoutEpoch = (root: DOMElement): number => {
 	return next;
 };
 
-export const appendChildNode = (
-	node: DOMElement,
-	childNode: DOMElement,
-): void => {
+export const appendChildNode = (node: DOMElement, childNode: DOMNode): void => {
 	if (childNode.parentNode) {
 		removeChildNode(childNode.parentNode, childNode);
 	}
