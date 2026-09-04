@@ -170,9 +170,8 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 	);
 
 	// Record the drawn position so `getBounds` can hit-test against the pinned
-	// copy rather than the natural-flow (yoga-ancestor-walk) position. When the
-	// node draws at its natural position this equals the layout walk (harmless);
-	// when off-screen it is cleared so no stale rect survives.
+	// copy rather than the natural-flow (yoga-ancestor-walk) position. Rejected
+	// descendants may retain an older rect, so `getBounds` also checks its epoch.
 	node.internal_stickyRect = visible ? {x, y} : undefined;
 
 	if (!visible) {
