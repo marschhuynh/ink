@@ -877,3 +877,133 @@ test('VLBox clears stale bounds for a culled direct child of an indexed sticky',
 	t.is(nestedStickyRef.current?.getPaintOrder(), undefined);
 	t.notDeepEqual(nestedStickyRef.current?.getBounds(), visibleBounds);
 });
+
+test('VLBox bounds a wide pinned indexed sticky root surface', async t => {
+	const stdout = createStdout(40);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const stickyRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={12}
+			height={4}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box height={1} flexShrink={0}>
+				<Text>before</Text>
+			</Box>
+			<Box
+				ref={stickyRef}
+				position="sticky"
+				top={0}
+				width={500}
+				height={3}
+				borderStyle="single"
+				backgroundColor="red"
+				flexShrink={0}
+			/>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	const sticky = stickyRef.current!;
+	let surfaceWriteCount = 0;
+	let surfaceCellCount = 0;
+	let maximumWriteCount = 0;
+	let maximumCellCount = 0;
+	Object.defineProperty(sticky, 'internal_lastSurfaceWriteCount', {
+		configurable: true,
+		get() {
+			return surfaceWriteCount;
+		},
+		set(value: number | undefined) {
+			surfaceWriteCount = value ?? 0;
+			maximumWriteCount = Math.max(maximumWriteCount, value ?? 0);
+		},
+	});
+	Object.defineProperty(sticky, 'internal_lastSurfaceCellCount', {
+		configurable: true,
+		get() {
+			return surfaceCellCount;
+		},
+		set(value: number | undefined) {
+			surfaceCellCount = value ?? 0;
+			maximumCellCount = Math.max(maximumCellCount, value ?? 0);
+		},
+	});
+
+	viewportRef.current?.scrollTo({y: 1});
+	await instance.waitUntilRenderFlush();
+
+	const viewportBounds = viewportRef.current?.getBounds();
+	const stickyBounds = sticky.getBounds();
+	t.truthy(viewportBounds);
+	t.is(stickyBounds.y, viewportBounds!.y);
+	t.deepEqual(stripAnsi(stdout.get()).split('\n').slice(0, 3), [
+		'┌───────────',
+		'│',
+		'└───────────',
+	]);
+	t.true(
+		maximumWriteCount < 40,
+		`writes ${maximumWriteCount} should stay viewport-bounded across resets`,
+	);
+	t.true(
+		maximumCellCount < 12 * 3 * 4,
+		`cells ${maximumCellCount} should stay viewport-bounded across resets`,
+	);
+	t.is(sticky.internal_lastSurfaceWriteCount, maximumWriteCount);
+	t.is(sticky.internal_lastSurfaceCellCount, maximumCellCount);
+});
+
+test('VLBox rejects a wholly horizontally off-screen indexed sticky root', async t => {
+	const stdout = createStdout(40);
+	const stickyRef = React.createRef<BoxRef>();
+	const childRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<VLBox width={12} height={4} overflow="scroll" flexDirection="column">
+			<Box height={1} flexShrink={0}>
+				<Text>visible</Text>
+			</Box>
+			<Box
+				ref={stickyRef}
+				position="sticky"
+				top={0}
+				left={30}
+				width={6}
+				height={3}
+				borderStyle="single"
+				backgroundColor="red"
+				flexShrink={0}
+			>
+				<Box ref={childRef}>
+					<Text>HIDDEN</Text>
+				</Box>
+			</Box>
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	t.false(stripAnsi(stdout.get()).includes('HIDDEN'));
+	t.is(stickyRef.current?.getPaintOrder(), undefined);
+	t.is(stickyRef.current?.internal_stickyRect, undefined);
+	t.is(stickyRef.current?.internal_lastSurfaceWriteCount, undefined);
+	t.is(stickyRef.current?.internal_lastSurfaceCellCount, undefined);
+	t.is(childRef.current?.getPaintOrder(), undefined);
+});
