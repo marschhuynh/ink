@@ -3,7 +3,7 @@ import Yoga from 'yoga-layout';
 import {LegacyRoot} from 'react-reconciler/constants.js';
 import reconciler from './reconciler.js';
 import renderer from './renderer.js';
-import {createNode, type DOMElement} from './dom.js';
+import {createNode, incrementLayoutEpoch, type DOMElement} from './dom.js';
 
 export type RenderToStringOptions = {
 	/**
@@ -65,6 +65,7 @@ const renderToString = (
 			undefined,
 			Yoga.DIRECTION_LTR,
 		);
+		incrementLayoutEpoch(rootNode);
 	};
 
 	rootNode.onImmediateRender = () => {

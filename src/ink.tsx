@@ -366,6 +366,7 @@ export default class Ink {
 	private cancelKittyDetection?: () => void;
 	private nextRenderCommit?: {promise: Promise<void>; resolve: () => void};
 	private readonly textSelection: TextSelectionController;
+	private lastLayoutWidth?: number;
 
 	constructor(options: Options) {
 		autoBind(this);
@@ -568,14 +569,15 @@ export default class Ink {
 
 	calculateLayout = () => {
 		const terminalWidth = getWindowSize(this.options.stdout).columns;
-
-		this.rootNode.yogaNode!.setWidth(terminalWidth);
-
-		this.rootNode.yogaNode!.calculateLayout(
-			undefined,
-			undefined,
-			Yoga.DIRECTION_LTR,
-		);
+		const yoga = this.rootNode.yogaNode!;
+		const widthChanged = this.lastLayoutWidth !== terminalWidth;
+		if (widthChanged) {
+			yoga.setWidth(terminalWidth);
+			this.lastLayoutWidth = terminalWidth;
+		}
+		if (!widthChanged && !yoga.isDirty()) return;
+		yoga.calculateLayout(undefined, undefined, Yoga.DIRECTION_LTR);
+		dom.incrementLayoutEpoch(this.rootNode);
 	};
 
 	onRender: () => void = () => {
