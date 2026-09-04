@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useEffect} from 'react';
 import test from 'ava';
 import delay from 'delay';
 import {
@@ -7,7 +7,10 @@ import {
 	type DOMElement,
 	render,
 	Text,
+	type TextSelectionHandle,
 	Transform,
+	useTextSelection,
+	useTextSelectionActions,
 	useWindowSize,
 	VLBox,
 	type VLBoxRef,
@@ -1030,5 +1033,221 @@ test('nested VLBoxes retain independent offsets', async t => {
 	await waitForWriteCount(stdout, 3);
 	t.deepEqual(outerRef.current!.getScrollPosition(), {x: 0, y: 2});
 	t.deepEqual(innerRef.current!.getScrollPosition(), {x: 0, y: 4});
+	instance.unmount();
+});
+
+test('VLBox selection matches the unculled visible output before and after scroll', async t => {
+	const rowCount = 8;
+	const height = 3;
+	const width = 12;
+	const rows = Array.from({length: rowCount}, (_, index) => (
+		<Box key={index} flexShrink={0}>
+			<Text>{`row ${index}`}</Text>
+		</Box>
+	));
+
+	const selectVisible = (
+		selection: TextSelectionHandle,
+		node: NonNullable<BoxRef>,
+	) => {
+		const bounds = node.getBounds();
+		selection.clear();
+		selection.start({x: bounds.x, y: bounds.y});
+		selection.update({
+			x: bounds.x + Math.max(bounds.width, 1),
+			y: bounds.y + Math.max(bounds.height, 1) - 1,
+		});
+		selection.finish();
+	};
+
+	const visibleRowText = (scrollY: number): string =>
+		Array.from({length: height}, (_, index) => `row ${scrollY + index}`).join(
+			'\n',
+		);
+
+	const vlStdout = createStdout(80);
+	const boxStdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const boxRef = React.createRef<BoxRef>();
+	const vlHandle: {current?: TextSelectionHandle} = {};
+	const boxHandle: {current?: TextSelectionHandle} = {};
+
+	function bindSelection(
+		selection: TextSelectionHandle,
+		handle: {current?: TextSelectionHandle},
+		getNode: () => BoxRef | undefined,
+	) {
+		handle.current = selection;
+		selection.setViewportProvider(() => {
+			const node = getNode();
+			if (!node) {
+				return null;
+			}
+
+			const bounds = node.getBounds();
+			return {
+				top: bounds.y,
+				left: bounds.x,
+				width: bounds.width,
+				height: bounds.height,
+				scrollY: node.getScrollPosition().y,
+			};
+		});
+	}
+
+	function VlFixture() {
+		// Keep the interactive useTextSelection subscription path covered;
+		// actions+getSnapshot are used for at-event-time assertions.
+		useTextSelection();
+		const selection = useTextSelectionActions();
+		useEffect(() => {
+			bindSelection(
+				selection,
+				vlHandle,
+				() => viewportRef.current ?? undefined,
+			);
+			return () => {
+				selection.setViewportProvider(null);
+			};
+			// eslint-disable-next-line react-hooks/exhaustive-deps
+		}, []);
+		return (
+			<VLBox
+				ref={viewportRef}
+				width={width}
+				height={height}
+				overflow="scroll"
+				flexDirection="column"
+			>
+				{rows}
+			</VLBox>
+		);
+	}
+
+	function BoxFixture() {
+		useTextSelection();
+		const selection = useTextSelectionActions();
+		useEffect(() => {
+			bindSelection(selection, boxHandle, () => boxRef.current ?? undefined);
+			return () => {
+				selection.setViewportProvider(null);
+			};
+			// eslint-disable-next-line react-hooks/exhaustive-deps
+		}, []);
+		return (
+			<Box
+				ref={boxRef}
+				width={width}
+				height={height}
+				overflow="scroll"
+				flexDirection="column"
+			>
+				{rows}
+			</Box>
+		);
+	}
+
+	const vlInstance = render(<VlFixture />, {stdout: vlStdout, debug: true});
+	const boxInstance = render(<BoxFixture />, {
+		stdout: boxStdout,
+		debug: true,
+	});
+	await waitForWriteCount(vlStdout, 1);
+	await waitForWriteCount(boxStdout, 1);
+	await delay(50);
+
+	t.truthy(vlHandle.current);
+	t.truthy(boxHandle.current);
+	t.truthy(viewportRef.current);
+	t.truthy(boxRef.current);
+	selectVisible(vlHandle.current!, viewportRef.current!);
+	selectVisible(boxHandle.current!, boxRef.current!);
+	await delay(50);
+
+	const beforeExpected = visibleRowText(0);
+	t.is(vlHandle.current!.getSnapshot().text, beforeExpected);
+	t.is(boxHandle.current!.getSnapshot().text, beforeExpected);
+	t.is(
+		vlHandle.current!.getSnapshot().text,
+		boxHandle.current!.getSnapshot().text,
+	);
+	t.false(vlHandle.current!.getSnapshot().text.includes('row 3'));
+	t.false(vlHandle.current!.getSnapshot().text.includes(`row ${rowCount - 1}`));
+
+	viewportRef.current!.scrollTo({y: 4});
+	boxRef.current!.scrollTo({y: 4});
+	await waitForWriteCount(vlStdout, 2);
+	await waitForWriteCount(boxStdout, 2);
+	await delay(50);
+
+	selectVisible(vlHandle.current!, viewportRef.current!);
+	selectVisible(boxHandle.current!, boxRef.current!);
+	await delay(50);
+
+	const afterExpected = visibleRowText(4);
+	t.is(vlHandle.current!.getSnapshot().text, afterExpected);
+	t.is(boxHandle.current!.getSnapshot().text, afterExpected);
+	t.is(
+		vlHandle.current!.getSnapshot().text,
+		boxHandle.current!.getSnapshot().text,
+	);
+	t.false(vlHandle.current!.getSnapshot().text.includes('row 0'));
+	t.false(vlHandle.current!.getSnapshot().text.includes('row 7'));
+	vlInstance.unmount();
+	boxInstance.unmount();
+});
+
+test('VLBox screen-reader output includes the complete unscrolled tree', t => {
+	const output = renderToString(
+		<VLBox height={2} overflow="scroll" flexDirection="column" aria-role="list">
+			{Array.from({length: 6}, (_, index) => (
+				<Box key={index} aria-role="listitem">
+					<Text>Row {index + 1}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{isScreenReaderEnabled: true},
+	);
+	t.true(output.includes('Row 1'));
+	t.true(output.includes('Row 6'));
+});
+
+test('VLBox pointer paint epochs track viewport visibility', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const rowRefs = Array.from({length: 20}, () => React.createRef<BoxRef>());
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{Array.from({length: 20}, (_, index) => (
+				<Box key={index} ref={rowRefs[index]} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	const root = rootOf(viewportRef.current!);
+	t.is(rowRefs[15]?.current?.getPaintOrder(), undefined);
+	t.truthy(rowRefs[1]?.current?.getPaintOrder());
+	t.is(rowRefs[1]!.current!.getPaintOrder()!.epoch, root.internal_paintEpoch);
+
+	viewportRef.current!.scrollTo({y: 14});
+	await instance.waitUntilRenderFlush();
+
+	const broughtIntoView = rowRefs[15]?.current?.getPaintOrder();
+	t.truthy(broughtIntoView);
+	t.is(
+		broughtIntoView!.epoch,
+		rootOf(viewportRef.current!).internal_paintEpoch,
+	);
+	t.is(rowRefs[1]?.current?.getPaintOrder(), undefined);
 	instance.unmount();
 });
