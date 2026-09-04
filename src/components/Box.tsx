@@ -234,14 +234,27 @@ export const createBoxComponent = (
 						const width = yogaNode.getComputedWidth();
 						const height = yogaNode.getComputedHeight();
 
-						// A pinned `position: "sticky"` node is drawn away from its
-						// natural-flow position by `renderStickyNode`, which records the
-						// drawn rect on the element. Prefer it so hit-testing lands on the
-						// pinned copy. The live `position === 'sticky'` guard ensures a node
-						// that has since stopped being sticky never reads a stale rect.
+						// A pinned sticky is drawn away from its Yoga-derived position.
+						// Prefer its recorded rect only while its paint epoch is current;
+						// rejected subtrees can intentionally retain older sticky rects.
 						const stickyRect = element.internal_stickyRect;
-						if (element.style.position === 'sticky' && stickyRect) {
-							return {x: stickyRect.x, y: stickyRect.y, width, height};
+						if (
+							element.style.position === 'sticky' &&
+							stickyRect &&
+							element.internal_paintEpoch !== undefined
+						) {
+							let root: DOMElement = element;
+							while (root.parentNode) {
+								root = root.parentNode;
+							}
+
+							if (
+								root.nodeName === 'ink-root' &&
+								root.internal_paintEpoch !== undefined &&
+								element.internal_paintEpoch === root.internal_paintEpoch
+							) {
+								return {x: stickyRect.x, y: stickyRect.y, width, height};
+							}
 						}
 
 						let parent = element.parentNode;
