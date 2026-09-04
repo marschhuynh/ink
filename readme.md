@@ -1407,6 +1407,36 @@ See example in [examples/box-backgrounds](examples/box-backgrounds/box-backgroun
 paint work and scrolls without a React update. It does not virtualize mounting
 or provide input handling or a scrollbar.
 
+#### Warm-scroll benchmark
+
+The production-path benchmark mounts a 424×95 terminal fixture (6,000 mixed
+rows with nested clips, absolute children, and sticky headers) once under `Box`
+and once under `VLBox`, warms five imperative `scrollTo({y: current + 1})`
+steps, then measures at least 30 committed frames through `onRender` with
+`incrementalRendering: true` and `maxFps: 1000` (never `debug: true`).
+
+```sh
+npm run benchmark:vlbox -- --samples=30
+npm run benchmark:vlbox -- --samples=30 --release-check
+```
+
+Reported metrics:
+
+- median / p95 `onRender.renderTime` (renderer/culling work)
+- median / p95 end-to-end wall time per step
+- maximum `internal_lastRenderVisitCount`
+- checkpoint ANSI parity at scroll offsets 1, 10, and 30
+- VLBox layout-epoch delta across measured scrolls
+
+Release gates (`--release-check`) use median `renderTime` only:
+
+- VLBox large render median `<= 16 ms`
+- Box / VLBox large render speedup `>= 5x`
+- VLBox small-fixture render median within `10%` of Box
+- VLBox measured scrolls do not advance the layout epoch
+- VLBox large max visits `<= 600`
+- checkpoint frames match between Box and VLBox
+
 ### `<Newline>`
 
 Adds one or more newline (`\n`) characters.
