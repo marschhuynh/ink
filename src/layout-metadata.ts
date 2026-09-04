@@ -310,7 +310,19 @@ export const clampViewportScroll = (
 	requested: {x?: number; y?: number} = {},
 ): {x: number; y: number} => {
 	const current = node.internal_scrollOffset ?? {x: 0, y: 0};
-	const metadata = getScrollViewportMetadata(node);
+	let metadata = getScrollViewportMetadata(node);
+	if (!metadata) {
+		const root = getRoot(node);
+		if (
+			root.nodeName === 'ink-root' &&
+			root.internal_layoutEpoch !== undefined &&
+			root.yogaNode?.isDirty() === false
+		) {
+			prepareLayoutMetadata(root);
+			metadata = getScrollViewportMetadata(node);
+		}
+	}
+
 	if (!metadata || !node.yogaNode) return current;
 	const yoga = node.yogaNode;
 	const width =
