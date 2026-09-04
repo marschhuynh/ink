@@ -5,6 +5,11 @@
  * Measures end-to-end wall time and onRender.renderTime after warm-up; release
  * gates apply only to median renderTime (plus visitation, layout-epoch, parity).
  *
+ * The large fixture groups 6,000 mixed rows into SECTION_SIZE=25 retained
+ * subtrees so VLBox can reject off-screen chunks as cull units. This is the
+ * supported retained-subtree benchmark shape, not flat-list virtualization:
+ * a 6,000-row list of direct siblings still pays O(n) sibling probes.
+ *
  * Usage:
  *   npm run benchmark:vlbox -- --samples=30
  *   npm run benchmark:vlbox -- --samples=30 --release-check
@@ -20,6 +25,7 @@ import {
 	Text,
 	VLBox,
 	type BoxRef,
+	type DOMElement,
 	type VLBoxRef,
 } from '../src/index.js';
 
@@ -45,7 +51,6 @@ type FakeStdout = NodeJS.WriteStream & {
 	bytes: () => number;
 	writeCount: () => number;
 	writesFrom: (index: number) => string;
-	snapshotWrites: () => string;
 };
 
 type RenderInstance = {
@@ -61,42 +66,39 @@ const createStdout = (columns: number, rows: number): FakeStdout => {
 	let last = '';
 	let totalBytes = 0;
 	const writeLog: string[] = [];
-	const write = spy(
-		(
-			chunk: string | Uint8Array,
-			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
-			maybeCallback?: (error?: Error | null) => void,
-		) => {
-			const text =
-				typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
-			last = text;
-			writeLog.push(text);
-			totalBytes += text.length;
-			const callback =
-				typeof encodingOrCallback === 'function'
-					? encodingOrCallback
-					: maybeCallback;
-			callback?.(null);
-			return true;
-		},
-	);
-	stdout.write = write;
+	stdout.write = (
+		chunk: string | Uint8Array,
+		encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+		maybeCallback?: (error?: Error | null) => void,
+	) => {
+		const text =
+			typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+		last = text;
+		writeLog.push(text);
+		totalBytes += text.length;
+		const callback =
+			typeof encodingOrCallback === 'function'
+				? encodingOrCallback
+				: maybeCallback;
+		callback?.(null);
+		return true;
+	};
+
 	stdout.get = () => last;
 	stdout.bytes = () => totalBytes;
 	stdout.writeCount = () => writeLog.length;
 	stdout.writesFrom = (index: number) => writeLog.slice(index).join('');
-	stdout.snapshotWrites = () => writeLog.join('');
 	return stdout;
 };
 
 const createStdin = (): NodeJS.ReadStream => {
 	const stdin = new EventEmitter() as unknown as NodeJS.ReadStream;
 	stdin.isTTY = true;
-	stdin.setEncoding = stub();
-	stdin.setRawMode = stub();
-	stdin.ref = stub();
-	stdin.unref = stub();
-	stdin.read = stub().returns(null);
+	stdin.setEncoding = () => stdin;
+	stdin.setRawMode = () => stdin;
+	stdin.ref = () => stdin;
+	stdin.unref = () => stdin;
+	stdin.read = () => null;
 	return stdin;
 };
 
@@ -124,7 +126,18 @@ const p95 = (values: number[]): number => {
 	return sorted[index]!;
 };
 
+const maximum = (values: number[]): number => {
+	if (values.length === 0) {
+		return 0;
+	}
+
+	return Math.max(...values);
+};
+
 const formatMs = (value: number): string => value.toFixed(3);
+
+const formatBytes = (value: number): string =>
+	Number.isInteger(value) ? String(value) : value.toFixed(1);
 
 type MixedRowProps = {
 	readonly index: number;
@@ -233,8 +246,9 @@ function Viewport({
 	onViewportRef,
 	useVlBox,
 }: ViewportProps) {
-	// Section wrappers give VLBox cullable subtrees so off-screen chunks are
-	// rejected as a unit instead of probing every direct child row.
+	// Section wrappers are the supported retained-subtree shape: VLBox rejects
+	// off-screen chunks as cull units. Flat direct siblings still pay O(n)
+	// sibling probes; this is not flat-list virtualization.
 	const sections: React.ReactNode[] = [];
 	for (let start = 0; start < rows; start += SECTION_SIZE) {
 		const end = Math.min(rows, start + SECTION_SIZE);
@@ -298,7 +312,7 @@ type ScenarioResult = {
 	layoutEpochBefore: number | undefined;
 	layoutEpochAfter: number | undefined;
 	checkpoints: Record<number, string>;
-	totalStdoutBytes: number;
+	stdoutDeltas: number[];
 };
 
 const parseArgs = (
@@ -330,6 +344,10 @@ const parseArgs = (
 
 	if (!Number.isFinite(samples) || samples < 1) {
 		throw new Error('--samples must be >= 1');
+	}
+
+	if (releaseCheck && samples < 30) {
+		throw new Error('--release-check requires --samples >= 30');
 	}
 
 	return {samples, releaseCheck};
@@ -369,6 +387,7 @@ async function runScenario(options: {
 	const {label, useVlBox, rows, viewportRows, samples, collectCheckpoints} =
 		options;
 	const stdout = createStdout(TERMINAL_COLUMNS, TERMINAL_ROWS);
+	const stderr = createStdout(TERMINAL_COLUMNS, TERMINAL_ROWS);
 	const stdin = createStdin();
 	let viewport: BoxRef | VLBoxRef | null = null;
 
@@ -393,7 +412,9 @@ async function runScenario(options: {
 		{
 			stdout,
 			stdin,
-			stderr: stdout,
+			stderr,
+			patchConsole: false,
+			interactive: true,
 			incrementalRendering: true,
 			maxFps: 1000,
 			onRender(metrics: Metrics) {
@@ -435,9 +456,9 @@ async function runScenario(options: {
 
 		const renderTimes: number[] = [];
 		const wallTimes: number[] = [];
+		const stdoutDeltas: number[] = [];
 		let maxVisited = 0;
 		const checkpoints: Record<number, string> = {};
-		const bytesAtStart = stdout.bytes();
 
 		const scrollToOffset = async (offset: number, message: string) => {
 			const before = commits;
@@ -448,20 +469,26 @@ async function runScenario(options: {
 			});
 		};
 
+		const isCheckpointOffset = (offset: number): boolean =>
+			collectCheckpoints && CHECKPOINT_OFFSETS.includes(offset as 1 | 10 | 30);
+
+		const captureCheckpoint = async (offset: number, writeIndex: number) => {
+			if (!isCheckpointOffset(offset)) {
+				return;
+			}
+
+			await instance.waitUntilRenderFlush();
+			checkpoints[offset] = stdout.writesFrom(writeIndex);
+		};
+
 		// Warm-up scrolls (not measured).
 		for (let step = 1; step <= WARMUP_STEPS; step++) {
+			const writeIndex = stdout.writeCount();
 			await scrollToOffset(
 				step,
 				`${label}: timed out during warm-up step ${step}`,
 			);
-
-			if (
-				collectCheckpoints &&
-				CHECKPOINT_OFFSETS.includes(step as 1 | 10 | 30)
-			) {
-				await instance.waitUntilRenderFlush();
-				checkpoints[step] = stdout.snapshotWrites();
-			}
+			await captureCheckpoint(step, writeIndex);
 		}
 
 		const layoutEpochBefore = root.internal_layoutEpoch;
@@ -469,6 +496,7 @@ async function runScenario(options: {
 		// Measured warm samples: scroll current+1 from the post-warm offset.
 		for (let index = 0; index < samples; index++) {
 			const offset = WARMUP_STEPS + index + 1;
+			const writeIndex = stdout.writeCount();
 			const bytesBefore = stdout.bytes();
 			const wallStart = performance.now();
 			await scrollToOffset(
@@ -478,25 +506,15 @@ async function runScenario(options: {
 			const wallTime = performance.now() - wallStart;
 			renderTimes.push(lastMetrics.renderTime);
 			wallTimes.push(wallTime);
+			stdoutDeltas.push(stdout.bytes() - bytesBefore);
 			maxVisited = Math.max(
 				maxVisited,
 				root.internal_lastRenderVisitCount ?? 0,
 			);
-
-			// Measure write-log deltas correctly (not one-write-per-frame).
-			void (stdout.bytes() - bytesBefore);
-
-			if (
-				collectCheckpoints &&
-				CHECKPOINT_OFFSETS.includes(offset as 1 | 10 | 30)
-			) {
-				await instance.waitUntilRenderFlush();
-				checkpoints[offset] = stdout.snapshotWrites();
-			}
+			await captureCheckpoint(offset, writeIndex);
 		}
 
 		const layoutEpochAfter = root.internal_layoutEpoch;
-		const totalStdoutBytes = stdout.bytes() - bytesAtStart;
 
 		// Capture any checkpoint still missing after the measured range.
 		if (collectCheckpoints) {
@@ -505,12 +523,12 @@ async function runScenario(options: {
 					continue;
 				}
 
+				const writeIndex = stdout.writeCount();
 				await scrollToOffset(
 					offset,
 					`${label}: timed out seeking checkpoint ${offset}`,
 				);
-				await instance.waitUntilRenderFlush();
-				checkpoints[offset] = stdout.snapshotWrites();
+				await captureCheckpoint(offset, writeIndex);
 			}
 		}
 
@@ -527,7 +545,7 @@ async function runScenario(options: {
 			layoutEpochBefore,
 			layoutEpochAfter,
 			checkpoints,
-			totalStdoutBytes,
+			stdoutDeltas,
 		};
 	} finally {
 		instance.unmount();
@@ -543,7 +561,9 @@ const summarize = (result: ScenarioResult) => ({
 	layoutDelta: (result.layoutEpochAfter ?? 0) - (result.layoutEpochBefore ?? 0),
 	mountRenderTime: result.mountRenderTime,
 	mountWallTime: result.mountWallTime,
-	totalStdoutBytes: result.totalStdoutBytes,
+	stdoutDeltaMedian: median(result.stdoutDeltas),
+	stdoutDeltaP95: p95(result.stdoutDeltas),
+	stdoutDeltaMax: maximum(result.stdoutDeltas),
 });
 
 const printTable = (
@@ -566,7 +586,9 @@ const printTable = (
 			'max visits'.padStart(12),
 			'mount render'.padStart(14),
 			'mount wall'.padStart(12),
-			'stdout B'.padStart(12),
+			'stdout Δ med'.padStart(13),
+			'stdout Δ p95'.padStart(13),
+			'stdout Δ max'.padStart(13),
 		].join(' '),
 	);
 	for (const row of [box, vl]) {
@@ -580,7 +602,9 @@ const printTable = (
 				String(row.maxVisited).padStart(12),
 				formatMs(row.mountRenderTime).padStart(14),
 				formatMs(row.mountWallTime).padStart(12),
-				String(row.totalStdoutBytes).padStart(12),
+				formatBytes(row.stdoutDeltaMedian).padStart(13),
+				formatBytes(row.stdoutDeltaP95).padStart(13),
+				formatBytes(row.stdoutDeltaMax).padStart(13),
 			].join(' '),
 		);
 	}
@@ -598,7 +622,10 @@ console.log(
 	`VLBox benchmark — ${TERMINAL_COLUMNS}×${TERMINAL_ROWS}, samples=${samples}, warmup=${WARMUP_STEPS}, releaseCheck=${releaseCheck}`,
 );
 console.log(
-	'Path: incrementalRendering=true maxFps=1000 (production paint; debug=false)',
+	'Path: incrementalRendering=true maxFps=1000 interactive=true patchConsole=false (production paint; debug=false)',
+);
+console.log(
+	`Fixture: ${LARGE_ROWS} mixed rows in SECTION_SIZE=${SECTION_SIZE} retained subtrees (supported cull-unit shape; not flat-list virtualization — flat direct siblings still pay O(n) sibling probes).`,
 );
 
 const boxLarge = await runScenario({
@@ -641,7 +668,7 @@ const boxSmallSummary = {...summarize(boxSmall), label: 'Box'};
 const vlSmallSummary = {...summarize(vlSmall), label: 'VLBox'};
 
 printTable(
-	'Large fixture (6000 mixed rows, 424×95)',
+	`Large fixture (${LARGE_ROWS} mixed rows in SECTION_SIZE=${SECTION_SIZE} retained subtrees, ${TERMINAL_COLUMNS}×${TERMINAL_ROWS})`,
 	boxLargeSummary,
 	vlLargeSummary,
 );
