@@ -370,6 +370,117 @@ test('VLBox sticky index preserves pinning order and pointer bounds', async t =>
 	t.true((headerOrder?.index ?? -1) > (coveredRowOrder?.index ?? -1));
 });
 
+test('VLBox paints a nested sticky once with its pinned parent', async t => {
+	const boxStdout = createStdout(100);
+	const vlBoxStdout = createStdout(100);
+	const boxContainerRef = React.createRef<BoxRef>();
+	const vlBoxContainerRef = React.createRef<VLBoxRef>();
+	const outerStickyRef = React.createRef<BoxRef>();
+	const nestedStickyRef = React.createRef<BoxRef>();
+	const coveredRowRef = React.createRef<BoxRef>();
+
+	const children = (
+		outerRef?: React.Ref<BoxRef>,
+		nestedRef?: React.Ref<BoxRef>,
+		rowRef?: React.Ref<BoxRef>,
+	) => (
+		<>
+			<Box flexShrink={0}>
+				<Text>before</Text>
+			</Box>
+			<Box
+				ref={outerRef}
+				position="sticky"
+				top={0}
+				flexDirection="column"
+				flexShrink={0}
+			>
+				<Text>OUTER</Text>
+				<Box ref={nestedRef} position="sticky" top={0} flexShrink={0}>
+					<Text>INNER</Text>
+				</Box>
+			</Box>
+			{Array.from({length: 8}, (_, index) => (
+				<Box key={index} ref={index === 0 ? rowRef : undefined} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</>
+	);
+
+	const boxInstance = render(
+		<Box
+			ref={boxContainerRef}
+			width={20}
+			height={4}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{children()}
+		</Box>,
+		{stdout: boxStdout, debug: true},
+	);
+	const vlBoxInstance = render(
+		<VLBox
+			ref={vlBoxContainerRef}
+			width={20}
+			height={4}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{children(outerStickyRef, nestedStickyRef, coveredRowRef)}
+		</VLBox>,
+		{stdout: vlBoxStdout, debug: true},
+	);
+	t.teardown(() => {
+		boxInstance.unmount();
+		vlBoxInstance.unmount();
+	});
+	await Promise.all([
+		waitForWriteCount(boxStdout, 1),
+		waitForWriteCount(vlBoxStdout, 1),
+	]);
+
+	boxContainerRef.current?.scrollTo({y: 2});
+	vlBoxContainerRef.current?.scrollTo({y: 2});
+	await Promise.all([
+		boxInstance.waitUntilRenderFlush(),
+		vlBoxInstance.waitUntilRenderFlush(),
+	]);
+
+	const output = vlBoxStdout.get();
+	t.is(
+		output,
+		boxStdout.get(),
+		'VLBox output must remain byte-identical to Box',
+	);
+	t.is(
+		(output.match(/INNER/g) ?? []).length,
+		1,
+		'nested sticky must paint only with its nearest sticky ancestor',
+	);
+
+	const containerBounds = vlBoxContainerRef.current?.getBounds();
+	const outerBounds = outerStickyRef.current?.getBounds();
+	const nestedBounds = nestedStickyRef.current?.getBounds();
+	t.truthy(containerBounds);
+	t.truthy(outerBounds);
+	t.truthy(nestedBounds);
+	t.is(outerBounds!.y, containerBounds!.y);
+	t.is(nestedBounds!.y, outerBounds!.y + 1);
+
+	const coveredOrder = coveredRowRef.current?.getPaintOrder();
+	const outerOrder = outerStickyRef.current?.getPaintOrder();
+	const nestedOrder = nestedStickyRef.current?.getPaintOrder();
+	t.truthy(coveredOrder);
+	t.truthy(outerOrder);
+	t.truthy(nestedOrder);
+	t.is(outerOrder?.epoch, coveredOrder?.epoch);
+	t.is(nestedOrder?.epoch, outerOrder?.epoch);
+	t.true((outerOrder?.index ?? -1) > (coveredOrder?.index ?? -1));
+	t.true((nestedOrder?.index ?? -1) > (outerOrder?.index ?? -1));
+});
+
 test('VLBox sticky index defers nested normal scroll boxes to traversal', async t => {
 	const stdout = createStdout(100);
 	const nestedScrollRef = React.createRef<BoxRef>();
