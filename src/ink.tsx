@@ -186,8 +186,21 @@ const getReflowedLineCount = (output: string, columns: number): number => {
 	}).split('\n').length;
 };
 
-const isOutputSoftWrapped = (output: string, columns: number): boolean =>
-	output !== '' && widestLine(output) > columns;
+const isOutputSoftWrapped = (
+	output: string,
+	columns: number,
+	maxVisualWidth?: number,
+): boolean => {
+	if (output === '') {
+		return false;
+	}
+
+	if (maxVisualWidth !== undefined) {
+		return maxVisualWidth > columns;
+	}
+
+	return widestLine(output) > columns;
+};
 
 const isErrorInput = (value: unknown): value is Error => {
 	return (
@@ -594,7 +607,7 @@ export default class Ink {
 		}
 
 		const startTime = performance.now();
-		const {output, outputHeight, staticOutput} = render(
+		const {output, outputHeight, staticOutput, maxVisualWidth} = render(
 			this.rootNode,
 			this.isScreenReaderEnabled,
 			// Screen-reader rendering bypasses Output, so selection is skipped.
@@ -696,6 +709,7 @@ export default class Ink {
 			output,
 			outputHeight,
 			hasStaticOutput ? staticOutput : '',
+			maxVisualWidth,
 		);
 	};
 
@@ -1123,6 +1137,7 @@ export default class Ink {
 		output: string,
 		outputHeight: number,
 		staticOutput: string,
+		maxVisualWidth?: number,
 	): void {
 		const hasStaticOutput = staticOutput !== '';
 		const isTty = this.options.stdout.isTTY;
@@ -1142,32 +1157,19 @@ export default class Ink {
 			hadPhysicalFrame && this.lastOutputToRender !== '';
 		const columnsDecreased =
 			Boolean(isTty) && terminalWidth < this.lastTerminalWidth;
-		const widthChanged =
-			Boolean(isTty) &&
-			this.lastTerminalWidth !== 0 &&
-			terminalWidth !== this.lastTerminalWidth;
 		const outputWillRender =
 			hasStaticOutput || this.log.willRender(outputToRender);
-		// Widest-line on a truecolor frame is several milliseconds. Ordinary
-		// same-width updates of a fitted frame cannot have reflowed, so skip
-		// classification unless the width changed or the last painted frame was
-		// already soft-wrapped.
 		const shouldClassifyNextFrame =
-			Boolean(isTty) &&
-			outputWillRender &&
-			(this.lastTerminalWidth === 0 ||
-				widthChanged ||
-				this.lastPhysicalFrameWasSoftWrapped);
+			Boolean(isTty) && (columnsDecreased || outputWillRender);
 		const nextFrameIsSoftWrapped =
 			shouldClassifyNextFrame &&
-			isOutputSoftWrapped(outputToRender, terminalWidth);
+			isOutputSoftWrapped(outputToRender, terminalWidth, maxVisualWidth);
 		const shouldRepairReflow =
 			Boolean(isTty) &&
 			hasCachedPhysicalOutput &&
-			outputWillRender &&
 			(columnsDecreased ||
-				(widthChanged &&
-					(this.lastPhysicalFrameWasSoftWrapped || nextFrameIsSoftWrapped)));
+				((this.lastPhysicalFrameWasSoftWrapped || nextFrameIsSoftWrapped) &&
+					outputWillRender));
 		const reflowedLineCount = shouldRepairReflow
 			? getReflowedLineCount(this.lastOutputToRender, terminalWidth)
 			: 0;
@@ -1209,7 +1211,8 @@ export default class Ink {
 			this.hasPhysicalFrame = true;
 			this.lastPhysicalFrameWasSoftWrapped = shouldClassifyNextFrame
 				? nextFrameIsSoftWrapped
-				: this.lastPhysicalFrameWasSoftWrapped;
+				: Boolean(isTty) &&
+					isOutputSoftWrapped(outputToRender, terminalWidth, maxVisualWidth);
 
 			if (sync) {
 				this.options.stdout.write(esu);
@@ -1263,7 +1266,8 @@ export default class Ink {
 		if (didWriteFrame) {
 			this.lastPhysicalFrameWasSoftWrapped = shouldClassifyNextFrame
 				? nextFrameIsSoftWrapped
-				: this.lastPhysicalFrameWasSoftWrapped;
+				: Boolean(isTty) &&
+					isOutputSoftWrapped(outputToRender, terminalWidth, maxVisualWidth);
 		}
 
 		this.lastViewportRows = viewportRows;

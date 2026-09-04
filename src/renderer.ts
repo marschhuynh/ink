@@ -12,6 +12,7 @@ type Result = {
 	output: string;
 	outputHeight: number;
 	staticOutput: string;
+	maxVisualWidth: number;
 };
 
 let nextPaintEpoch = 0;
@@ -47,6 +48,7 @@ const renderer = (
 				output,
 				outputHeight,
 				staticOutput: staticOutput ? `${staticOutput}\n` : '',
+				maxVisualWidth: 0,
 			};
 		}
 
@@ -80,7 +82,11 @@ const renderer = (
 
 		// Selection applies to the main output only; static output is written
 		// once and must never contain highlight styling.
-		const {output: generatedOutput, height: outputHeight} = output.get(
+		const {
+			output: generatedOutput,
+			height: outputHeight,
+			maxVisualWidth,
+		} = output.get(
 			selection
 				? {
 						capturePlainRows: true,
@@ -99,6 +105,7 @@ const renderer = (
 		return {
 			output: generatedOutput,
 			outputHeight,
+			maxVisualWidth,
 			// Newline at the end is needed, because static output doesn't have one, so
 			// interactive output will override last line of static output
 			staticOutput: staticOutput ? `${staticOutput.get().output}\n` : '',
@@ -109,6 +116,7 @@ const renderer = (
 		output: '',
 		outputHeight: 0,
 		staticOutput: '',
+		maxVisualWidth: 0,
 	};
 };
 
