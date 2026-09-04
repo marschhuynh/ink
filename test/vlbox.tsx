@@ -35,6 +35,23 @@ const waitForWriteCount = async (
 	return waitForWriteCount(stdout, expected, retriesLeft - 1);
 };
 
+const waitUntil = async (
+	predicate: () => boolean,
+	message: string,
+	retriesLeft = 50,
+): Promise<void> => {
+	if (predicate()) {
+		return;
+	}
+
+	if (retriesLeft === 0) {
+		throw new Error(`Timed out waiting for ${message}`);
+	}
+
+	await delay(20);
+	return waitUntil(predicate, message, retriesLeft - 1);
+};
+
 const rootOf = (node: NonNullable<BoxRef>): NonNullable<BoxRef> => {
 	let root = node;
 	while (root.parentNode) root = root.parentNode as NonNullable<BoxRef>;
@@ -1071,6 +1088,8 @@ test('VLBox selection matches the unculled visible output before and after scrol
 	const boxRef = React.createRef<BoxRef>();
 	const vlHandle: {current?: TextSelectionHandle} = {};
 	const boxHandle: {current?: TextSelectionHandle} = {};
+	const vlSubscribedText: {current: string} = {current: ''};
+	const boxSubscribedText: {current: string} = {current: ''};
 
 	function bindSelection(
 		selection: TextSelectionHandle,
@@ -1096,18 +1115,13 @@ test('VLBox selection matches the unculled visible output before and after scrol
 	}
 
 	function VlFixture() {
-		// Keep the interactive useTextSelection subscription path covered;
-		// actions+getSnapshot are used for at-event-time assertions.
-		useTextSelection();
-		const selection = useTextSelectionActions();
+		const selection = useTextSelection();
+		vlSubscribedText.current = selection.text;
+		const actions = useTextSelectionActions();
 		useEffect(() => {
-			bindSelection(
-				selection,
-				vlHandle,
-				() => viewportRef.current ?? undefined,
-			);
+			bindSelection(actions, vlHandle, () => viewportRef.current ?? undefined);
 			return () => {
-				selection.setViewportProvider(null);
+				actions.setViewportProvider(null);
 			};
 			// eslint-disable-next-line react-hooks/exhaustive-deps
 		}, []);
@@ -1125,12 +1139,13 @@ test('VLBox selection matches the unculled visible output before and after scrol
 	}
 
 	function BoxFixture() {
-		useTextSelection();
-		const selection = useTextSelectionActions();
+		const selection = useTextSelection();
+		boxSubscribedText.current = selection.text;
+		const actions = useTextSelectionActions();
 		useEffect(() => {
-			bindSelection(selection, boxHandle, () => boxRef.current ?? undefined);
+			bindSelection(actions, boxHandle, () => boxRef.current ?? undefined);
 			return () => {
-				selection.setViewportProvider(null);
+				actions.setViewportProvider(null);
 			};
 			// eslint-disable-next-line react-hooks/exhaustive-deps
 		}, []);
@@ -1152,9 +1167,12 @@ test('VLBox selection matches the unculled visible output before and after scrol
 		stdout: boxStdout,
 		debug: true,
 	});
-	await waitForWriteCount(vlStdout, 1);
-	await waitForWriteCount(boxStdout, 1);
-	await delay(50);
+	await vlInstance.waitUntilRenderFlush();
+	await boxInstance.waitUntilRenderFlush();
+	await waitUntil(
+		() => Boolean(vlHandle.current && boxHandle.current),
+		'effect-bound selection handles',
+	);
 
 	t.truthy(vlHandle.current);
 	t.truthy(boxHandle.current);
@@ -1162,35 +1180,56 @@ test('VLBox selection matches the unculled visible output before and after scrol
 	t.truthy(boxRef.current);
 	selectVisible(vlHandle.current!, viewportRef.current!);
 	selectVisible(boxHandle.current!, boxRef.current!);
-	await delay(50);
 
 	const beforeExpected = visibleRowText(0);
+	await waitUntil(
+		() =>
+			vlSubscribedText.current === beforeExpected &&
+			boxSubscribedText.current === beforeExpected &&
+			vlHandle.current?.getSnapshot().text === beforeExpected &&
+			boxHandle.current?.getSnapshot().text === beforeExpected,
+		'visible selection text before scroll',
+	);
+
+	t.is(vlSubscribedText.current, beforeExpected);
+	t.is(boxSubscribedText.current, beforeExpected);
 	t.is(vlHandle.current!.getSnapshot().text, beforeExpected);
 	t.is(boxHandle.current!.getSnapshot().text, beforeExpected);
 	t.is(
 		vlHandle.current!.getSnapshot().text,
 		boxHandle.current!.getSnapshot().text,
 	);
+	t.is(vlSubscribedText.current, boxSubscribedText.current);
 	t.false(vlHandle.current!.getSnapshot().text.includes('row 3'));
 	t.false(vlHandle.current!.getSnapshot().text.includes(`row ${rowCount - 1}`));
 
 	viewportRef.current!.scrollTo({y: 4});
 	boxRef.current!.scrollTo({y: 4});
-	await waitForWriteCount(vlStdout, 2);
-	await waitForWriteCount(boxStdout, 2);
-	await delay(50);
+	await vlInstance.waitUntilRenderFlush();
+	await boxInstance.waitUntilRenderFlush();
 
 	selectVisible(vlHandle.current!, viewportRef.current!);
 	selectVisible(boxHandle.current!, boxRef.current!);
-	await delay(50);
 
 	const afterExpected = visibleRowText(4);
+	await waitUntil(
+		() =>
+			vlSubscribedText.current === afterExpected &&
+			boxSubscribedText.current === afterExpected &&
+			vlHandle.current?.getSnapshot().text === afterExpected &&
+			boxHandle.current?.getSnapshot().text === afterExpected,
+		'visible selection text after scroll',
+	);
+
+	t.is(vlSubscribedText.current, afterExpected);
+	t.is(boxSubscribedText.current, afterExpected);
 	t.is(vlHandle.current!.getSnapshot().text, afterExpected);
 	t.is(boxHandle.current!.getSnapshot().text, afterExpected);
 	t.is(
 		vlHandle.current!.getSnapshot().text,
 		boxHandle.current!.getSnapshot().text,
 	);
+	t.is(vlSubscribedText.current, boxSubscribedText.current);
 	t.false(vlHandle.current!.getSnapshot().text.includes('row 0'));
 	t.false(vlHandle.current!.getSnapshot().text.includes('row 7'));
 	vlInstance.unmount();
@@ -1235,7 +1274,8 @@ test('VLBox pointer paint epochs track viewport visibility', async t => {
 	await waitForWriteCount(stdout, 1);
 
 	const root = rootOf(viewportRef.current!);
-	t.is(rowRefs[15]?.current?.getPaintOrder(), undefined);
+	t.truthy(rowRefs[15]?.current);
+	t.is(rowRefs[15]!.current!.getPaintOrder(), undefined);
 	t.truthy(rowRefs[1]?.current?.getPaintOrder());
 	t.is(rowRefs[1]!.current!.getPaintOrder()!.epoch, root.internal_paintEpoch);
 
