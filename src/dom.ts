@@ -76,6 +76,10 @@ export type DOMElement = {
 	// its paint epoch matches the current root epoch.
 	internal_paintEpoch?: number;
 	internal_paintIndex?: number;
+	// Yoga root layout generation. Advanced only when calculateLayout actually
+	// runs (dirty root or terminal width change). Metadata caches compare
+	// against this to know when layout-derived data is stale.
+	internal_layoutEpoch?: number;
 	// The absolute position at which a `position: "sticky"` node was last drawn
 	// by `renderStickyNode`. While pinned this differs from the natural
 	// (yoga-ancestor-walk) position; `getBounds` prefers it so hit-testing lands
@@ -119,6 +123,12 @@ export const createNode = (nodeName: ElementNames): DOMElement => {
 	}
 
 	return node;
+};
+
+export const incrementLayoutEpoch = (root: DOMElement): number => {
+	const next = (root.internal_layoutEpoch ?? 0) + 1;
+	root.internal_layoutEpoch = next;
+	return next;
 };
 
 export const appendChildNode = (
