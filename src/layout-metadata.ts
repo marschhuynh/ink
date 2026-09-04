@@ -4,6 +4,7 @@ import {
 	type NodeLayoutMetadata,
 	type Rect,
 	type ScrollViewportMetadata,
+	type StickyCandidate,
 } from './dom.js';
 
 const rect = (
@@ -65,12 +66,56 @@ const yogaLessSubtreeHasUnboundedTransform = (node: DOMElement): boolean => {
 	return false;
 };
 
+type StickyOwner = {
+	node: DOMElement;
+	originX: number;
+	originY: number;
+};
+
+type MetadataWalk = {
+	owner?: StickyOwner;
+	nodeX: number;
+	nodeY: number;
+	parentX: number;
+	parentY: number;
+	parent?: DOMElement;
+	transformers: Array<NonNullable<DOMElement['internal_transform']>>;
+	nextPaintOrder: {value: number};
+};
+
 const buildNode = (
 	node: DOMElement,
 	epoch: number,
+	state: MetadataWalk,
 ): NodeLayoutMetadata | undefined => {
 	const yoga = node.yogaNode;
 	if (!yoga || yoga.getDisplay() === Yoga.DISPLAY_NONE) return undefined;
+
+	// Register against the nearest owning VLBox before this node can become the
+	// owner for its own descendants.
+	if (
+		node.style.position === 'sticky' &&
+		state.owner &&
+		state.parent?.yogaNode
+	) {
+		state.owner.node.internal_scrollViewportMetadata?.stickyCandidates.push({
+			node,
+			parentOffset: {
+				x: state.parentX - state.owner.originX,
+				y: state.parentY - state.owner.originY,
+			},
+			parentBounds: {
+				top: state.parentY - state.owner.originY,
+				bottom:
+					state.parentY -
+					state.owner.originY +
+					state.parent.yogaNode.getComputedHeight(),
+			},
+			parentIsViewport: state.parent === state.owner.node,
+			transformers: state.transformers,
+			paintOrder: state.nextPaintOrder.value++,
+		});
+	}
 
 	const own = rect(0, 0, yoga.getComputedWidth(), yoga.getComputedHeight());
 	let childPaintBounds: Rect | undefined;
@@ -79,12 +124,29 @@ const buildNode = (
 		? ({
 				epoch,
 				contentExtent: {width: 0, height: 0},
-				stickyCandidates: [],
+				stickyCandidates: [] as StickyCandidate[],
 			} satisfies ScrollViewportMetadata)
 		: undefined;
 	if (viewport) node.internal_scrollViewportMetadata = viewport;
 
-	for (const childNode of node.childNodes) {
+	const isScrollContainer =
+		node.style.overflowX === 'scroll' || node.style.overflowY === 'scroll';
+	const childOwner = isScrollContainer
+		? node.internal_viewportCulling
+			? {node, originX: state.nodeX, originY: state.nodeY}
+			: undefined
+		: state.owner;
+
+	const childTransformers =
+		typeof node.internal_transform === 'function'
+			? [node.internal_transform, ...state.transformers]
+			: state.transformers;
+	const sortedChildren = [...node.childNodes].sort((a, b) => {
+		const aZ = (a as DOMElement).style?.zIndex ?? 0;
+		const bZ = (b as DOMElement).style?.zIndex ?? 0;
+		return aZ - bZ;
+	});
+	for (const childNode of sortedChildren) {
 		if (childNode.nodeName === '#text') continue;
 		const child = childNode;
 		if (!child.yogaNode) {
@@ -92,7 +154,18 @@ const buildNode = (
 			continue;
 		}
 
-		const childMetadata = buildNode(child, epoch);
+		const childX = state.nodeX + (child.yogaNode.getComputedLeft() ?? 0);
+		const childY = state.nodeY + (child.yogaNode.getComputedTop() ?? 0);
+		const childMetadata = buildNode(child, epoch, {
+			owner: childOwner,
+			nodeX: childX,
+			nodeY: childY,
+			parentX: state.nodeX,
+			parentY: state.nodeY,
+			parent: node,
+			transformers: childTransformers,
+			nextPaintOrder: state.nextPaintOrder,
+		});
 		if (!childMetadata) continue;
 		const childPaint = translate(
 			childMetadata.subtreePaintBounds,
@@ -115,14 +188,17 @@ const buildNode = (
 	};
 	node.internal_layoutMetadata = metadata;
 
-	if (viewport && childPaintBounds) {
-		// Match Box.getContentDimensions(): only descendants contribute to the
-		// scroll extent. Each child's already-clipped subtree bounds prevents a
-		// descendant escaping overflow:hidden/scroll from enlarging its ancestor.
-		viewport.contentExtent = {
-			width: Math.max(0, childPaintBounds.right),
-			height: Math.max(0, childPaintBounds.bottom),
-		};
+	if (viewport) {
+		viewport.stickyCandidates.sort((a, b) => a.paintOrder - b.paintOrder);
+		if (childPaintBounds) {
+			// Match Box.getContentDimensions(): only descendants contribute to the
+			// scroll extent. Each child's already-clipped subtree bounds prevents a
+			// descendant escaping overflow:hidden/scroll from enlarging its ancestor.
+			viewport.contentExtent = {
+				width: Math.max(0, childPaintBounds.right),
+				height: Math.max(0, childPaintBounds.bottom),
+			};
+		}
 	}
 
 	return metadata;
@@ -148,7 +224,16 @@ export const prepareLayoutMetadata = (root: DOMElement): void => {
 		return;
 	}
 
-	buildNode(root, epoch);
+	buildNode(root, epoch, {
+		owner: undefined,
+		nodeX: 0,
+		nodeY: 0,
+		parentX: 0,
+		parentY: 0,
+		parent: undefined,
+		transformers: [],
+		nextPaintOrder: {value: 0},
+	});
 	root.internal_layoutMetadataDirty = false;
 };
 
