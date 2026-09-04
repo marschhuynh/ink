@@ -1,4 +1,5 @@
 import test from 'ava';
+import sliceAnsi from 'slice-ansi';
 import Output from '../src/output.js';
 
 test('Output.get can return plain rows without ANSI style codes', t => {
@@ -89,4 +90,17 @@ test('fully-inside horizontal clip is a no-op on write bytes', t => {
 	clipped.unclip();
 
 	t.is(clipped.get().output, unclipped.get().output);
+});
+
+test('ANSI-only zero-width clip matches sliceAnsi', t => {
+	const ansiOnly = '\u001B[31m\u001B[39m';
+	const clipped = new Output({width: 10, height: 1});
+	clipped.clip({x1: 0, x2: 10, y1: 0, y2: 1});
+	clipped.write(0, 0, ansiOnly, {transformers: []});
+	clipped.unclip();
+
+	const sliced = new Output({width: 10, height: 1});
+	sliced.write(0, 0, sliceAnsi(ansiOnly, 0, 0), {transformers: []});
+
+	t.is(clipped.get().output, sliced.get().output);
 });
