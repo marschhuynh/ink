@@ -64,7 +64,14 @@ type ScrollShift = {
 	rows: number;
 	/** First frame row of the shifted band (sticky chrome above is left untouched). */
 	start: number;
+	/** First frame row after the shifted band (sticky chrome below is left untouched). */
+	end: number;
 };
+
+const setScrollRegion = (start: number, end: number): string =>
+	`\u001B[${start + 1};${end}r`;
+const resetScrollRegion = '\u001B[r';
+const cursorToRow = (row: number): string => `\u001B[${row + 1};1H`;
 
 const blankLines = (count: number): string[] =>
 	Array.from({length: count}, () => '');
@@ -78,6 +85,18 @@ const prefixUnchanged = (
 		if (nextLines[index] !== previousLines[index]) {
 			return false;
 		}
+	}
+
+	return true;
+};
+
+const suffixUnchanged = (
+	previousLines: string[],
+	nextLines: string[],
+	end: number,
+): boolean => {
+	for (let index = end; index < nextLines.length; index++) {
+		if (nextLines[index] !== previousLines[index]) return false;
 	}
 
 	return true;
@@ -117,13 +136,17 @@ const detectScrollShift = (
 			upLast = i;
 		}
 
+		const upEnd = upLast + rows + 1;
 		if (
 			up >= required &&
 			upFirst >= 0 &&
 			upLast - upFirst + 1 >= required &&
-			prefixUnchanged(previousLines, nextLines, upFirst)
+			upEnd <= height &&
+			upEnd - upFirst > rows &&
+			prefixUnchanged(previousLines, nextLines, upFirst) &&
+			suffixUnchanged(previousLines, nextLines, upEnd)
 		) {
-			return {rows, start: upFirst};
+			return {rows, start: upFirst, end: upEnd};
 		}
 
 		// Content moved down: nextLines[i] === previousLines[i - rows]; the top
@@ -145,13 +168,19 @@ const detectScrollShift = (
 			downLast = i;
 		}
 
+		const downStart = downFirst - rows;
+		const downEnd = downLast + 1;
 		if (
 			down >= required &&
 			downFirst >= 0 &&
 			downLast - downFirst + 1 >= required &&
-			prefixUnchanged(previousLines, nextLines, downFirst - rows)
+			downStart >= 0 &&
+			downEnd <= height &&
+			downEnd - downStart > rows &&
+			prefixUnchanged(previousLines, nextLines, downStart) &&
+			suffixUnchanged(previousLines, nextLines, downEnd)
 		) {
-			return {rows: -rows, start: downFirst - rows};
+			return {rows: -rows, start: downStart, end: downEnd};
 		}
 	}
 
@@ -431,26 +460,22 @@ const createIncremental = (
 
 		if (shift) {
 			const k = Math.abs(shift.rows);
-			const {start} = shift;
-			const shiftedPrevious =
+			const {start, end} = shift;
+			const prefix = prevVisible.slice(0, start);
+			const band = prevVisible.slice(start, end);
+			const suffix = prevVisible.slice(end);
+			const shiftedBand =
 				shift.rows > 0
-					? [
-							...prevVisible.slice(0, start),
-							...prevVisible.slice(start + k),
-							...blankLines(k),
-						]
-					: [
-							...prevVisible.slice(0, start),
-							...blankLines(k),
-							...prevVisible.slice(start, prevVisible.length - k),
-						];
+					? [...band.slice(k), ...blankLines(k)]
+					: [...blankLines(k), ...band.slice(0, band.length - k)];
+			const shiftedPrevious = [...prefix, ...shiftedBand, ...suffix];
 
-			// IL/DL at the first shifted row: lines above sticky chrome stay put.
-			// Without a scroll region this also moves rows below the band, which
-			// the ordinary diff then restores.
 			buffer.push(
-				ansiEscapes.cursorUp(previousLines.length - 1 - start),
+				setScrollRegion(start, end),
+				cursorToRow(start),
 				shift.rows > 0 ? `\u001B[${k}M` : `\u001B[${k}L`,
+				resetScrollRegion,
+				cursorToRow(start),
 			);
 			diffPrevious = shiftedPrevious;
 			loopStart = start;
