@@ -19,6 +19,7 @@ let nextPaintEpoch = 0;
 const createPaintState = (): PaintState => ({
 	epoch: ++nextPaintEpoch,
 	nextIndex: 0,
+	visitedCount: 0,
 });
 
 const renderer = (
@@ -56,10 +57,12 @@ const renderer = (
 			height: node.yogaNode.getComputedHeight(),
 		});
 
+		const paintState = createPaintState();
 		renderNodeToOutput(node, output, {
 			skipStaticElements: true,
-			paintState: createPaintState(),
+			paintState,
 		});
+		node.internal_lastRenderVisitCount = paintState.visitedCount;
 
 		let staticOutput;
 
