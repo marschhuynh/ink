@@ -1,9 +1,22 @@
 import React, {useEffect, useRef, useState} from 'react';
 import test from 'ava';
 import delay from 'delay';
-import {Box, type BoxRef, render, Text} from '../src/index.js';
+import {
+	Box,
+	type BoxRef,
+	render,
+	Text,
+	VLBox,
+	type VLBoxRef,
+} from '../src/index.js';
 import createStdout from './helpers/create-stdout.js';
 import {renderToString} from './helpers/render-to-string.js';
+
+const rootOf = (node: NonNullable<BoxRef>): NonNullable<BoxRef> => {
+	let root = node;
+	while (root.parentNode) root = root.parentNode as NonNullable<BoxRef>;
+	return root;
+};
 
 const waitForWriteCount = async (
 	stdout: {getWrites: () => string[]},
@@ -296,4 +309,241 @@ test('paint order hides an element that was not painted in the current frame', a
 	await instance.waitUntilRenderFlush();
 
 	t.is(ref.current?.getPaintOrder(), undefined);
+});
+
+test('VLBox sticky index preserves pinning order and pointer bounds', async t => {
+	const stdout = createStdout(100);
+	const containerRef = React.createRef<VLBoxRef>();
+	const headerRef = React.createRef<BoxRef>();
+	const coveredRowRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<VLBox
+			ref={containerRef}
+			width={20}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box ref={headerRef} position="sticky" top={0} flexShrink={0}>
+				<Text>HEADER</Text>
+			</Box>
+			{Array.from({length: 10}, (_, index) => (
+				<Box
+					key={index}
+					ref={index === 4 ? coveredRowRef : undefined}
+					flexShrink={0}
+				>
+					<Text>Item {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	containerRef.current?.scrollTo({y: 5});
+	await instance.waitUntilRenderFlush();
+
+	const lines = stdout.get().split('\n');
+	t.true(lines[0]?.includes('HEADER'));
+	t.is(
+		(stdout.get().match(/HEADER/g) ?? []).length,
+		1,
+		'HEADER must paint exactly once through the sticky index',
+	);
+
+	const headerBounds = headerRef.current?.getBounds();
+	const containerBounds = containerRef.current?.getBounds();
+	t.truthy(headerBounds);
+	t.truthy(containerBounds);
+	t.is(headerBounds!.y, containerBounds!.y);
+
+	const headerOrder = headerRef.current?.getPaintOrder();
+	const coveredRowOrder = coveredRowRef.current?.getPaintOrder();
+	t.truthy(headerOrder);
+	t.truthy(coveredRowOrder);
+	t.is(headerOrder?.epoch, coveredRowOrder?.epoch);
+	t.true((headerOrder?.index ?? -1) > (coveredRowOrder?.index ?? -1));
+});
+
+test('VLBox sticky index defers nested normal scroll boxes to traversal', async t => {
+	const stdout = createStdout(100);
+	const nestedScrollRef = React.createRef<BoxRef>();
+	const nestedStickyRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<VLBox width={24} height={5} overflow="scroll" flexDirection="column">
+			<Box
+				ref={nestedScrollRef}
+				height={3}
+				overflow="scroll"
+				flexDirection="column"
+				flexShrink={0}
+			>
+				{Array.from({length: 5}, (_, index) => (
+					<Box key={index} flexShrink={0}>
+						<Text>Nested {index}</Text>
+					</Box>
+				))}
+				<Box ref={nestedStickyRef} position="sticky" top={0} flexShrink={0}>
+					<Text>NESTED STICKY</Text>
+				</Box>
+				{/* Trailing rows so max scroll can lift the sticky to the nested top. */}
+				{Array.from({length: 5}, (_, index) => (
+					<Box key={`after-${index}`} flexShrink={0}>
+						<Text>After {index}</Text>
+					</Box>
+				))}
+			</Box>
+			<Text>outer tail</Text>
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	// Scroll the nested normal Box so the sticky row pins inside it while the
+	// nested container itself remains visible in the outer VLBox.
+	nestedScrollRef.current?.scrollTo({y: 5});
+	await instance.waitUntilRenderFlush();
+
+	const output = stdout.get();
+	t.is(
+		(output.match(/NESTED STICKY/g) ?? []).length,
+		1,
+		'nested sticky must paint exactly once via traversal-time stickyNodes',
+	);
+
+	const nestedBounds = nestedScrollRef.current?.getBounds();
+	const stickyBounds = nestedStickyRef.current?.getBounds();
+	t.truthy(nestedBounds);
+	t.truthy(stickyBounds);
+	t.is(stickyBounds!.y, nestedBounds!.y);
+
+	const stickyOrder = nestedStickyRef.current?.getPaintOrder();
+	t.truthy(stickyOrder);
+	t.is(
+		stickyOrder?.epoch,
+		rootOf(nestedStickyRef.current!).internal_paintEpoch,
+	);
+});
+
+test('VLBox sticky index rebuilds after Yoga-clean ownership and z-index changes', async t => {
+	const stdout = createStdout(100);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const outerStickyRef = React.createRef<BoxRef>();
+	const nestedRef = React.createRef<BoxRef>();
+	const nestedStickyRef = React.createRef<BoxRef>();
+	const midRowRef = React.createRef<BoxRef>();
+
+	const frame = (stickyZ: number, nestedOverflow: 'hidden' | 'scroll') => (
+		<VLBox
+			ref={viewportRef}
+			width={24}
+			height={6}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box
+				ref={outerStickyRef}
+				position="sticky"
+				top={0}
+				zIndex={stickyZ}
+				flexShrink={0}
+			>
+				<Text>OUTER STICKY</Text>
+			</Box>
+			<Box ref={midRowRef} flexShrink={0}>
+				<Text>mid row</Text>
+			</Box>
+			<Box
+				ref={nestedRef}
+				height={3}
+				overflow={nestedOverflow}
+				flexDirection="column"
+				flexShrink={0}
+			>
+				{Array.from({length: 4}, (_, index) => (
+					<Box key={index} flexShrink={0}>
+						<Text>Nested {index}</Text>
+					</Box>
+				))}
+				<Box ref={nestedStickyRef} position="sticky" top={0} flexShrink={0}>
+					<Text>INNER STICKY</Text>
+				</Box>
+				{Array.from({length: 4}, (_, index) => (
+					<Box key={`after-${index}`} flexShrink={0}>
+						<Text>After {index}</Text>
+					</Box>
+				))}
+			</Box>
+			{Array.from({length: 8}, (_, index) => (
+				<Box key={`tail-${index}`} flexShrink={0}>
+					<Text>tail {index}</Text>
+				</Box>
+			))}
+		</VLBox>
+	);
+
+	const instance = render(frame(0, 'hidden'), {stdout, debug: true});
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	const firstMetadata = viewportRef.current?.internal_scrollViewportMetadata;
+	const layoutEpoch = rootOf(viewportRef.current!).internal_layoutEpoch;
+	t.truthy(firstMetadata);
+	t.is(firstMetadata?.stickyCandidates.length, 2);
+	t.true(
+		firstMetadata!.stickyCandidates.some(
+			candidate => candidate.node === outerStickyRef.current,
+		),
+	);
+	t.true(
+		firstMetadata!.stickyCandidates.some(
+			candidate => candidate.node === nestedStickyRef.current,
+		),
+	);
+
+	instance.rerender(frame(10, 'scroll'));
+	await instance.waitUntilRenderFlush();
+
+	t.is(rootOf(viewportRef.current!).internal_layoutEpoch, layoutEpoch);
+	const rebuiltMetadata = viewportRef.current?.internal_scrollViewportMetadata;
+	t.truthy(rebuiltMetadata);
+	t.not(rebuiltMetadata, firstMetadata);
+	// Nested normal scroll clears indexed ownership; only the outer sticky remains.
+	t.is(rebuiltMetadata!.stickyCandidates.length, 1);
+	t.is(rebuiltMetadata!.stickyCandidates[0]?.node, outerStickyRef.current);
+
+	const writesAfterRebuild = stdout.getWrites().length;
+	viewportRef.current?.scrollTo({y: 1});
+	await waitForWriteCount(stdout, writesAfterRebuild + 1);
+
+	const outerOrder = outerStickyRef.current?.getPaintOrder();
+	const midOrder = midRowRef.current?.getPaintOrder();
+	t.truthy(outerOrder);
+	t.truthy(midOrder);
+	t.is(outerOrder?.epoch, midOrder?.epoch);
+	t.true((outerOrder?.index ?? -1) > (midOrder?.index ?? -1));
+
+	const writesAfterOuterScroll = stdout.getWrites().length;
+	nestedRef.current?.scrollTo({y: 4});
+	await waitForWriteCount(stdout, writesAfterOuterScroll + 1);
+	t.deepEqual(nestedRef.current?.getScrollPosition(), {x: 0, y: 4});
+
+	t.is((stdout.get().match(/INNER STICKY/g) ?? []).length, 1);
+	t.truthy(nestedStickyRef.current?.getPaintOrder());
+	// Nested Box getBounds is layout-space (no ancestor scroll). The sticky pins
+	// to the nested viewport's drawn top = layout y - outer scroll y.
+	const nestedLayoutY = nestedRef.current!.getBounds().y;
+	const outerScrollY = viewportRef.current!.getScrollPosition().y;
+	t.is(nestedStickyRef.current?.getBounds().y, nestedLayoutY - outerScrollY);
 });

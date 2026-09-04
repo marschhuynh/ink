@@ -6,11 +6,12 @@ import getMaxWidth from './get-max-width.js';
 import squashTextNodes from './squash-text-nodes.js';
 import renderBorder from './render-border.js';
 import renderBackground from './render-background.js';
-import {type DOMElement} from './dom.js';
+import {type DOMElement, type StickyCandidate} from './dom.js';
 import type Output from './output.js';
 import {
 	type CullingViewport,
 	getChildCullingViewport,
+	getScrollViewportMetadata,
 	shouldCullNode,
 } from './layout-metadata.js';
 
@@ -54,6 +55,9 @@ type ScrollContext = {
 	borderRight: number;
 	scrollOffset: {x: number; y: number};
 	stickyNodes: StickyNodeInfo[];
+	// Present (including empty) for VLBox scroll containers with current sticky
+	// index metadata. Undefined for normal Box so traversal-time stickyNodes remain.
+	indexedStickyCandidates?: readonly StickyCandidate[];
 };
 
 type PositionInfo = {
@@ -220,6 +224,70 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 	}
 };
 
+const renderIndexedStickyNode = (
+	candidate: StickyCandidate,
+	context: ScrollContext,
+	output: Output,
+	paintState: PaintState,
+): void => {
+	const position = {
+		x: context.containerX + candidate.parentOffset.x - context.scrollOffset.x,
+		y: context.containerY + candidate.parentOffset.y - context.scrollOffset.y,
+	};
+	const parentBounds = candidate.parentIsViewport
+		? {
+				top: context.containerY,
+				bottom: context.containerY + context.containerHeight,
+			}
+		: {
+				top:
+					context.containerY +
+					candidate.parentBounds.top -
+					context.scrollOffset.y,
+				bottom:
+					context.containerY +
+					candidate.parentBounds.bottom -
+					context.scrollOffset.y,
+			};
+	renderStickyNode(candidate.node, {
+		output,
+		position,
+		transformers: candidate.transformers,
+		scrollContext: context,
+		parentBounds,
+		paintState,
+	});
+};
+
+const paintScrollContainerStickies = (
+	context: ScrollContext,
+	output: Output,
+	paintState: PaintState,
+): void => {
+	const indexed = context.indexedStickyCandidates;
+	if (indexed) {
+		for (const sticky of indexed) {
+			renderIndexedStickyNode(sticky, context, output, paintState);
+		}
+
+		return;
+	}
+
+	for (const sticky of context.stickyNodes) {
+		renderStickyNode(sticky.node, {
+			output,
+			position: {x: sticky.offsetX, y: sticky.offsetY},
+			transformers: sticky.transformers,
+			scrollContext: context,
+			parentBounds: {
+				top: sticky.parentTop,
+				bottom: sticky.parentBottom,
+			},
+			paintState,
+		});
+	}
+};
+
 export const renderNodeToScreenReaderOutput = (
 	node: DOMElement,
 	options: {
@@ -370,6 +438,9 @@ const renderNodeToOutput = (
 		}
 
 		if (node.style.position === 'sticky' && scrollContext) {
+			// VLBox owns sticky paint via the metadata index; skip traversal
+			// collection so indexed stickies are never double-painted.
+			if (scrollContext.indexedStickyCandidates !== undefined) return;
 			scrollContext.stickyNodes.push({
 				node,
 				offsetX,
@@ -463,6 +534,11 @@ const renderNodeToOutput = (
 						borderRight: yogaNode.getComputedBorder(Yoga.EDGE_RIGHT),
 						scrollOffset,
 						stickyNodes: [],
+						// Mode is scroll-container, not nonzero offset: zero-offset VLBox
+						// still paints stickies from the index when metadata is current.
+						indexedStickyCandidates: node.internal_viewportCulling
+							? getScrollViewportMetadata(node)?.stickyCandidates
+							: undefined,
 					}
 				: scrollContext;
 			const childParentTop = y;
@@ -495,19 +571,7 @@ const renderNodeToOutput = (
 			}
 
 			if (isScrollContainer && newScrollContext) {
-				for (const sticky of newScrollContext.stickyNodes) {
-					renderStickyNode(sticky.node, {
-						output,
-						position: {x: sticky.offsetX, y: sticky.offsetY},
-						transformers: sticky.transformers,
-						scrollContext: newScrollContext,
-						parentBounds: {
-							top: sticky.parentTop,
-							bottom: sticky.parentBottom,
-						},
-						paintState,
-					});
-				}
+				paintScrollContainerStickies(newScrollContext, output, paintState);
 			}
 
 			if (clipped) {
