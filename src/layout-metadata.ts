@@ -93,28 +93,34 @@ const buildNode = (
 
 	// Register against the nearest owning VLBox before this node can become the
 	// owner for its own descendants.
+	let indexedSticky = false;
 	if (
 		node.style.position === 'sticky' &&
 		state.owner &&
 		state.parent?.yogaNode
 	) {
-		state.owner.node.internal_scrollViewportMetadata?.stickyCandidates.push({
-			node,
-			parentOffset: {
-				x: state.parentX - state.owner.originX,
-				y: state.parentY - state.owner.originY,
-			},
-			parentBounds: {
-				top: state.parentY - state.owner.originY,
-				bottom:
-					state.parentY -
-					state.owner.originY +
-					state.parent.yogaNode.getComputedHeight(),
-			},
-			parentIsViewport: state.parent === state.owner.node,
-			transformers: state.transformers,
-			paintOrder: state.nextPaintOrder.value++,
-		});
+		const candidates =
+			state.owner.node.internal_scrollViewportMetadata?.stickyCandidates;
+		if (candidates) {
+			candidates.push({
+				node,
+				parentOffset: {
+					x: state.parentX - state.owner.originX,
+					y: state.parentY - state.owner.originY,
+				},
+				parentBounds: {
+					top: state.parentY - state.owner.originY,
+					bottom:
+						state.parentY -
+						state.owner.originY +
+						state.parent.yogaNode.getComputedHeight(),
+				},
+				parentIsViewport: state.parent === state.owner.node,
+				transformers: state.transformers,
+				paintOrder: state.nextPaintOrder.value++,
+			});
+			indexedSticky = true;
+		}
 	}
 
 	const own = rect(0, 0, yoga.getComputedWidth(), yoga.getComputedHeight());
@@ -131,11 +137,15 @@ const buildNode = (
 
 	const isScrollContainer =
 		node.style.overflowX === 'scroll' || node.style.overflowY === 'scroll';
+	// An indexed sticky paints its subtree in flow; only a nested scroll container
+	// can establish new sticky ownership below it.
 	const childOwner = isScrollContainer
 		? node.internal_viewportCulling
 			? {node, originX: state.nodeX, originY: state.nodeY}
 			: undefined
-		: state.owner;
+		: indexedSticky
+			? undefined
+			: state.owner;
 
 	const childTransformers =
 		typeof node.internal_transform === 'function'
