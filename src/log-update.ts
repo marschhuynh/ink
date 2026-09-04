@@ -420,6 +420,8 @@ const createIncremental = (
 		const shift =
 			process.env['NUVIN_INK_NO_SCROLL_OPT'] === '1' ||
 			activeCursor !== undefined ||
+			hasTrailingNewline ||
+			previousOutput.endsWith('\n') ||
 			visibleCount !== previousVisible
 				? undefined
 				: detectScrollShift(prevVisible, nextVisible);

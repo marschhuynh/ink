@@ -1,4 +1,4 @@
-import React, {useEffect} from 'react';
+import React, {useEffect, useLayoutEffect} from 'react';
 import test from 'ava';
 import delay from 'delay';
 import {
@@ -274,6 +274,64 @@ test('VLBox reuses current-epoch metadata and cached content extent', async t =>
 	t.is(viewportRef.current?.internal_scrollViewportMetadata, metadata);
 	t.is(viewportRef.current?.internal_scrollViewportMetadata?.epoch, epoch);
 	t.deepEqual(viewportRef.current?.getScrollPosition(), {x: 0, y: 7});
+	instance.unmount();
+});
+
+test('VLBox prepares missing metadata for a layout-effect scroll after clean layout', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	let layoutWasClean = false;
+	let metadataWasMissing = false;
+
+	function Fixture({
+		rowCount,
+		scrollOnLayout,
+	}: {
+		readonly rowCount: number;
+		readonly scrollOnLayout: boolean;
+	}) {
+		useLayoutEffect(() => {
+			if (!scrollOnLayout || !viewportRef.current) return;
+			const root = rootOf(viewportRef.current);
+			layoutWasClean = root.yogaNode?.isDirty() === false;
+			metadataWasMissing =
+				viewportRef.current.internal_scrollViewportMetadata?.epoch !==
+				root.internal_layoutEpoch;
+			viewportRef.current.scrollTo({y: 4});
+		}, [rowCount, scrollOnLayout]);
+
+		return (
+			<VLBox
+				ref={viewportRef}
+				width={10}
+				height={3}
+				overflow="scroll"
+				flexDirection="column"
+			>
+				{Array.from({length: rowCount}, (_, index) => (
+					<Box key={index} flexShrink={0}>
+						<Text>row {index}</Text>
+					</Box>
+				))}
+			</VLBox>
+		);
+	}
+
+	const instance = render(<Fixture rowCount={3} scrollOnLayout={false} />, {
+		stdout,
+		maxFps: 1,
+	});
+	await instance.waitUntilRenderFlush();
+
+	instance.rerender(<Fixture scrollOnLayout rowCount={10} />);
+	await waitUntil(
+		() => metadataWasMissing,
+		'layout effect to observe missing current-epoch metadata',
+	);
+
+	t.true(layoutWasClean);
+	t.true(metadataWasMissing);
+	t.deepEqual(viewportRef.current?.getScrollPosition(), {x: 0, y: 4});
 	instance.unmount();
 });
 

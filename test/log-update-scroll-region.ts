@@ -10,6 +10,91 @@ const csiInsertLines = new RegExp(`${String.fromCodePoint(0x1b)}\\[\\d*L`);
 const secondWrite = (stdout: ReturnType<typeof createStdout>): string =>
 	stdout.get();
 
+const blankTerminalRows = (count: number): string[] =>
+	Array.from({length: count}, () => '');
+
+const applyTerminalWrite = (
+	initialRows: string[],
+	initialCursorRow: number,
+	write: string,
+): string[] => {
+	const rows = [...initialRows];
+	let row = initialCursorRow;
+	let column = 0;
+
+	for (let index = 0; index < write.length;) {
+		if (write[index] === '\u001B' && write[index + 1] === '[') {
+			let commandIndex = index + 2;
+			while (/\d/.test(write[commandIndex] ?? '')) commandIndex++;
+			const parameter = write.slice(index + 2, commandIndex);
+			const count = parameter === '' ? 1 : Number(parameter);
+			const command = write[commandIndex] ?? '';
+
+			switch (command) {
+				case 'A': {
+					row -= count;
+
+					break;
+				}
+
+				case 'E': {
+					row += count;
+					column = 0;
+
+					break;
+				}
+
+				case 'L': {
+					rows.splice(row, 0, ...blankTerminalRows(count));
+					rows.length = initialRows.length;
+
+					break;
+				}
+
+				case 'M': {
+					rows.splice(row, count);
+					rows.push(...blankTerminalRows(count));
+
+					break;
+				}
+
+				case 'G': {
+					column = count - 1;
+
+					break;
+				}
+
+				case 'K': {
+					rows[row] = rows[row]!.slice(0, column);
+
+					break;
+				}
+
+				default: {
+					throw new Error(`Unsupported terminal sequence at ${index}`);
+				}
+			}
+
+			index = commandIndex + 1;
+			continue;
+		}
+
+		if (write[index] === '\n') {
+			row++;
+			column = 0;
+			index++;
+			continue;
+		}
+
+		const cells = [...rows[row]!];
+		cells[column++] = write[index]!;
+		rows[row] = cells.join('');
+		index++;
+	}
+
+	return rows;
+};
+
 test('incremental scroll region - shift up rewrites only edge lines', t => {
 	const stdout = createStdout();
 	const render = logUpdate.create(stdout, {incremental: true});
@@ -27,6 +112,32 @@ test('incremental scroll region - shift up rewrites only edge lines', t => {
 	t.false(write.includes('row 3'));
 	t.false(write.includes('row 4'));
 	t.false(write.includes('row 6'));
+});
+
+test('incremental scroll region - non-fullscreen shift preserves rows below the frame', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+	const previousRows = ['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'];
+	const nextRows = ['row 3', 'row 4', 'row 5', 'row 6', 'new 7', 'new 8'];
+
+	render(`${previousRows.join('\n')}\n`);
+	render(`${nextRows.join('\n')}\n`);
+
+	const write = secondWrite(stdout);
+	t.notRegex(write, csiDeleteLines);
+	t.notRegex(write, csiInsertLines);
+	t.is(
+		write,
+		'\u001B[6A\u001B[1Grow 3\u001B[K\n\u001B[1Grow 4\u001B[K\n\u001B[1Grow 5\u001B[K\n\u001B[1Grow 6\u001B[K\n\u001B[1Gnew 7\u001B[K\n\u001B[1Gnew 8\u001B[K\n',
+	);
+
+	const belowRows = ['below one', 'below two', 'below three'];
+	const terminal = applyTerminalWrite(
+		[...previousRows, '', ...belowRows],
+		previousRows.length,
+		write,
+	);
+	t.deepEqual(terminal.slice(previousRows.length + 1), belowRows);
 });
 
 test('incremental scroll region - shift down emits insert-lines and rewrites top edge', t => {
