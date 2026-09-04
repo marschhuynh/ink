@@ -6,6 +6,7 @@ import Output from './output.js';
 import {paintSelection} from './paint-selection.js';
 import {type TextSelectionController} from './text-selection-controller.js';
 import {type DOMElement} from './dom.js';
+import {prepareLayoutMetadata} from './layout-metadata.js';
 
 type Result = {
 	output: string;
@@ -47,6 +48,8 @@ const renderer = (
 				staticOutput: staticOutput ? `${staticOutput}\n` : '',
 			};
 		}
+
+		prepareLayoutMetadata(node);
 
 		const output = new Output({
 			width: node.yogaNode.getComputedWidth(),

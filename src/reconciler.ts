@@ -25,6 +25,7 @@ import {
 } from './dom.js';
 import applyStyles, {type Styles} from './styles.js';
 import {type OutputTransformer} from './render-node-to-output.js';
+import {invalidateLayoutMetadata} from './layout-metadata.js';
 
 // We need to conditionally perform devtools connection to avoid
 // accidentally breaking other third-party code.
@@ -305,6 +306,11 @@ export default createReconciler<
 				continue;
 			}
 
+			if (key === 'internal_transformAffectsGeometry') {
+				node.internal_transformAffectsGeometry = value === true;
+				continue;
+			}
+
 			if (key === 'internal_selectable') {
 				node.internal_selectable = value as boolean;
 				continue;
@@ -410,6 +416,17 @@ export default createReconciler<
 			return;
 		}
 
+		const metadataSensitiveStyle =
+			style !== undefined &&
+			['zIndex', 'position', 'overflow', 'overflowX', 'overflowY'].some(
+				key => key in style,
+			);
+		const metadataSensitiveProp =
+			props !== undefined && 'internal_transformAffectsGeometry' in props;
+		if (metadataSensitiveStyle || metadataSensitiveProp) {
+			invalidateLayoutMetadata(node);
+		}
+
 		if (props) {
 			for (const [key, value] of Object.entries(props)) {
 				if (key === 'style') {
@@ -419,6 +436,11 @@ export default createReconciler<
 
 				if (key === 'internal_transform') {
 					node.internal_transform = value as OutputTransformer;
+					continue;
+				}
+
+				if (key === 'internal_transformAffectsGeometry') {
+					node.internal_transformAffectsGeometry = value === true;
 					continue;
 				}
 
