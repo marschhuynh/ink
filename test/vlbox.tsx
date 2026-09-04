@@ -8,6 +8,7 @@ import {
 	render,
 	Text,
 	Transform,
+	useWindowSize,
 	VLBox,
 	type VLBoxRef,
 } from '../src/index.js';
@@ -745,4 +746,289 @@ test('VLBox clips straddling background and border generation to visible rows an
 	t.is(stdout.get(), boxStdout.get());
 	vlInstance.unmount();
 	boxInstance.unmount();
+});
+
+test('VLBox scroll is paint-only and suppresses unchanged repaint', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>Line {index + 1}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	const root = rootOf(viewportRef.current!);
+	const epoch = root.internal_layoutEpoch;
+	viewportRef.current!.scrollTo({y: 2});
+	await waitForWriteCount(stdout, 2);
+	t.is(root.internal_layoutEpoch, epoch);
+	t.true(stdout.get().includes('Line 3'));
+	let paintRequests = 0;
+	const onRender = root.onRender!;
+	root.onRender = () => {
+		paintRequests++;
+		onRender();
+	};
+
+	const {act} = await import('react');
+	await act(async () => {
+		viewportRef.current!.scrollTo({y: 2});
+	});
+	t.is(paintRequests, 0);
+	instance.unmount();
+});
+
+test('VLBox host offset survives a later paint-only React commit', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>Line {index + 1}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	viewportRef.current!.scrollTo({y: 2});
+	await waitForWriteCount(stdout, 2);
+	t.deepEqual(viewportRef.current!.getScrollPosition(), {x: 0, y: 2});
+	t.true(stdout.get().includes('Line 3'));
+
+	instance.rerender(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+			borderColor="green"
+		>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>Line {index + 1}</Text>
+				</Box>
+			))}
+		</VLBox>,
+	);
+	await waitForWriteCount(stdout, 3);
+
+	t.deepEqual(viewportRef.current!.getScrollPosition(), {x: 0, y: 2});
+	t.true(stdout.get().includes('Line 3'));
+	t.false(stdout.get().includes('Line 1'));
+	instance.unmount();
+});
+
+test('VLBox normalizes invalid scroll offsets', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{Array.from({length: 10}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	viewportRef.current!.scrollTo({y: 3});
+	await waitForWriteCount(stdout, 2);
+	t.deepEqual(viewportRef.current!.getScrollPosition(), {x: 0, y: 3});
+
+	viewportRef.current!.scrollTo({
+		x: Number.NaN,
+		y: Number.POSITIVE_INFINITY,
+	});
+	await instance.waitUntilRenderFlush();
+
+	const position = viewportRef.current!.getScrollPosition();
+	t.true(Number.isFinite(position.x));
+	t.true(Number.isFinite(position.y));
+	// Non-finite supplied axes normalize to 0, then clamp into range.
+	t.deepEqual(position, {x: 0, y: 0});
+	instance.unmount();
+});
+
+test('VLBox clamps retained scroll after content shrink', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const longChildren = Array.from({length: 10}, (_, index) => (
+		<Box key={index} flexShrink={0}>
+			<Text>row {index}</Text>
+		</Box>
+	));
+	const shortChildren = Array.from({length: 4}, (_, index) => (
+		<Box key={index} flexShrink={0}>
+			<Text>row {index}</Text>
+		</Box>
+	));
+
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{longChildren}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	viewportRef.current!.scrollToBottom();
+	await waitForWriteCount(stdout, 2);
+	t.deepEqual(viewportRef.current!.getScrollPosition(), {x: 0, y: 7});
+
+	instance.rerender(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{shortChildren}
+		</VLBox>,
+	);
+	await waitForWriteCount(stdout, 3);
+
+	t.deepEqual(viewportRef.current!.getScrollPosition(), {x: 0, y: 1});
+	instance.unmount();
+});
+
+test('VLBox recalculates metadata and clamps after terminal resize', async t => {
+	const stdout = createStdout(80);
+	(stdout as any).rows = 5;
+	const viewportRef = React.createRef<VLBoxRef>();
+
+	function Fixture() {
+		const {rows} = useWindowSize();
+		return (
+			<VLBox
+				ref={viewportRef}
+				width={10}
+				height={rows}
+				overflow="scroll"
+				flexDirection="column"
+			>
+				{Array.from({length: 40}, (_, index) => (
+					<Box key={index} flexShrink={0}>
+						<Text>row {index}</Text>
+					</Box>
+				))}
+			</VLBox>
+		);
+	}
+
+	const instance = render(<Fixture />, {stdout, debug: true});
+	await waitForWriteCount(stdout, 1);
+
+	viewportRef.current!.scrollToBottom();
+	await waitForWriteCount(stdout, 2);
+	const before = viewportRef.current!.getScrollPosition();
+	const epochBefore = rootOf(viewportRef.current!).internal_layoutEpoch;
+	t.true(before.y > 0);
+
+	// Growing the terminal height enlarges the viewport, lowering maxY so the
+	// retained bottom offset must clamp on the resize layout/paint.
+	(stdout as any).columns = 80;
+	(stdout as any).rows = 20;
+	stdout.emit('resize');
+	// Wait for useWindowSize follow-up height commit after the resize signal.
+	await delay(200);
+	await instance.waitUntilRenderFlush();
+
+	const epochAfter = rootOf(viewportRef.current!).internal_layoutEpoch;
+	const after = viewportRef.current!.getScrollPosition();
+	t.true((epochAfter ?? 0) > (epochBefore ?? 0));
+	t.true(Number.isFinite(after.x));
+	t.true(Number.isFinite(after.y));
+	t.true(after.y >= 0);
+	t.true(after.y < before.y);
+	instance.unmount();
+});
+
+test('nested VLBoxes retain independent offsets', async t => {
+	const stdout = createStdout(80);
+	const outerRef = React.createRef<VLBoxRef>();
+	const innerRef = React.createRef<VLBoxRef>();
+	const instance = render(
+		<VLBox
+			ref={outerRef}
+			width={12}
+			height={5}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{Array.from({length: 3}, (_, index) => (
+				<Box key={`outer-${index}`} flexShrink={0}>
+					<Text>outer {index}</Text>
+				</Box>
+			))}
+			<VLBox
+				ref={innerRef}
+				width={10}
+				height={3}
+				overflow="scroll"
+				flexDirection="column"
+				flexShrink={0}
+			>
+				{Array.from({length: 8}, (_, index) => (
+					<Box key={`inner-${index}`} flexShrink={0}>
+						<Text>inner {index}</Text>
+					</Box>
+				))}
+			</VLBox>
+			{Array.from({length: 6}, (_, index) => (
+				<Box key={`tail-${index}`} flexShrink={0}>
+					<Text>tail {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	outerRef.current!.scrollTo({y: 2});
+	await waitForWriteCount(stdout, 2);
+	t.deepEqual(outerRef.current!.getScrollPosition(), {x: 0, y: 2});
+	t.deepEqual(innerRef.current!.getScrollPosition(), {x: 0, y: 0});
+
+	innerRef.current!.scrollTo({y: 4});
+	await waitForWriteCount(stdout, 3);
+	t.deepEqual(outerRef.current!.getScrollPosition(), {x: 0, y: 2});
+	t.deepEqual(innerRef.current!.getScrollPosition(), {x: 0, y: 4});
+	instance.unmount();
 });

@@ -291,6 +291,44 @@ export const shouldCullNode = (
 	return !intersectsViewport(bounds, viewport);
 };
 
+export const requestRootPaint = (node: DOMElement): void => {
+	let root = node;
+	while (root.parentNode) root = root.parentNode;
+	root.onRender?.();
+};
+
+const finiteOr = (value: number | undefined, fallback: number): number =>
+	value === undefined ? fallback : Number.isFinite(value) ? value : 0;
+
+export const sameOffset = (
+	a: {x: number; y: number},
+	b: {x: number; y: number},
+): boolean => a.x === b.x && a.y === b.y;
+
+export const clampViewportScroll = (
+	node: DOMElement,
+	requested: {x?: number; y?: number} = {},
+): {x: number; y: number} => {
+	const current = node.internal_scrollOffset ?? {x: 0, y: 0};
+	const metadata = getScrollViewportMetadata(node);
+	if (!metadata || !node.yogaNode) return current;
+	const yoga = node.yogaNode;
+	const width =
+		yoga.getComputedWidth() -
+		yoga.getComputedBorder(Yoga.EDGE_LEFT) -
+		yoga.getComputedBorder(Yoga.EDGE_RIGHT);
+	const height =
+		yoga.getComputedHeight() -
+		yoga.getComputedBorder(Yoga.EDGE_TOP) -
+		yoga.getComputedBorder(Yoga.EDGE_BOTTOM);
+	const maxX = Math.max(0, metadata.contentExtent.width - width);
+	const maxY = Math.max(0, metadata.contentExtent.height - height);
+	return {
+		x: Math.max(0, Math.min(finiteOr(requested.x, current.x), maxX)),
+		y: Math.max(0, Math.min(finiteOr(requested.y, current.y), maxY)),
+	};
+};
+
 export const getChildCullingViewport = (
 	node: DOMElement,
 	nodeX: number,

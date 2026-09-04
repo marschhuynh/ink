@@ -11,7 +11,12 @@ import Yoga from 'yoga-layout';
 import {type Except} from 'type-fest';
 import {type Styles} from '../styles.js';
 import {type DOMElement} from '../dom.js';
-import {getScrollViewportMetadata} from '../layout-metadata.js';
+import {
+	clampViewportScroll,
+	getScrollViewportMetadata,
+	requestRootPaint,
+	sameOffset,
+} from '../layout-metadata.js';
 import {accessibilityContext} from './AccessibilityContext.js';
 import {backgroundContext} from './BackgroundContext.js';
 
@@ -168,34 +173,55 @@ export const createBoxComponent = (
 					};
 				};
 
+				const applyViewportScroll = (requested: {x?: number; y?: number}) => {
+					if (viewportCulling) {
+						const current =
+							element.internal_scrollOffset ?? scrollStateRef.current;
+						const next = clampViewportScroll(element, requested);
+						// Keep the hook ref synchronized before the caller's React controller
+						// commit can run this component's layout effect.
+						scrollStateRef.current = {...next};
+						if (sameOffset(current, next)) return;
+						element.internal_scrollOffset = {...next};
+						requestRootPaint(element);
+						return;
+					}
+
+					const maxScroll = getMaxScroll();
+					if (requested.x !== undefined) {
+						scrollStateRef.current.x = Math.max(
+							0,
+							Math.min(requested.x, maxScroll.x),
+						);
+					}
+
+					if (requested.y !== undefined) {
+						scrollStateRef.current.y = Math.max(
+							0,
+							Math.min(requested.y, maxScroll.y),
+						);
+					}
+
+					element.internal_scrollOffset = {...scrollStateRef.current};
+					setScrollVersion(version => version + 1);
+				};
+
 				return Object.assign(element, {
-					scrollTo({x, y}: {x?: number; y?: number}) {
-						const maxScroll = getMaxScroll();
-
-						if (x !== undefined) {
-							scrollStateRef.current.x = Math.max(0, Math.min(x, maxScroll.x));
-						}
-
-						if (y !== undefined) {
-							scrollStateRef.current.y = Math.max(0, Math.min(y, maxScroll.y));
-						}
-
-						element.internal_scrollOffset = {...scrollStateRef.current};
-						setScrollVersion(version => version + 1);
+					scrollTo(requested: {x?: number; y?: number}) {
+						applyViewportScroll(requested);
 					},
 					getScrollPosition() {
+						if (viewportCulling) {
+							return {...(element.internal_scrollOffset ?? {x: 0, y: 0})};
+						}
+
 						return {...scrollStateRef.current};
 					},
 					scrollToTop() {
-						scrollStateRef.current.y = 0;
-						element.internal_scrollOffset = {...scrollStateRef.current};
-						setScrollVersion(version => version + 1);
+						applyViewportScroll({y: 0});
 					},
 					scrollToBottom() {
-						const maxScroll = getMaxScroll();
-						scrollStateRef.current.y = maxScroll.y;
-						element.internal_scrollOffset = {...scrollStateRef.current};
-						setScrollVersion(version => version + 1);
+						applyViewportScroll({y: Number.MAX_SAFE_INTEGER});
 					},
 					getBounds() {
 						const {yogaNode} = element;
@@ -255,9 +281,17 @@ export const createBoxComponent = (
 				style.overflowY === 'scroll';
 
 			useLayoutEffect(() => {
-				if (internalRef.current && isScrollContainer) {
-					internalRef.current.internal_scrollOffset = scrollStateRef.current;
+				const element = internalRef.current;
+				if (!element || !isScrollContainer) return;
+				if (viewportCulling) {
+					const retained =
+						element.internal_scrollOffset ?? scrollStateRef.current;
+					scrollStateRef.current = {...retained};
+					element.internal_scrollOffset = {...retained};
+					return;
 				}
+
+				element.internal_scrollOffset = scrollStateRef.current;
 			});
 
 			const {isScreenReaderEnabled} = useContext(accessibilityContext);
