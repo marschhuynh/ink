@@ -1,3 +1,4 @@
+import process from 'node:process';
 import {type Writable} from 'node:stream';
 import ansiEscapes from 'ansi-escapes';
 import cliCursor from 'cli-cursor';
@@ -44,6 +45,97 @@ const getEraseLineCount = (
 	}
 
 	return options?.eraseLineCount ?? cachedLineCount;
+};
+
+// Maximum shift distance (rows) considered by scroll-region detection. Real
+// wheel/keyboard scrolls move a handful of rows per commit; larger jumps
+// (PageUp/PageDown) rarely share half the frame and fall through to the
+// ordinary diff anyway.
+const maxScrollShift = 32;
+
+// Minimum fraction of the frame that must be explained by a pure vertical
+// shift for the scroll-region fast path to engage. Updates that merely resemble
+// a shift (streaming appends, selection highlights, spinner ticks) stay below
+// the threshold and use the ordinary diff.
+const minShiftedCoreRatio = 0.5;
+
+type ScrollShift = {
+	/** Positive: content moved up k rows (delete-lines). Negative: down (insert-lines). */
+	rows: number;
+	/** First frame row of the shifted band (sticky chrome above is left untouched). */
+	start: number;
+};
+
+const blankLines = (count: number): string[] =>
+	Array.from({length: count}, () => '');
+
+// Detect whether `nextLines` is `previousLines` shifted vertically by k rows
+// with at most a small band of changed edge lines. Only exact whole-line
+// equality counts (same semantics as the existing positional diff).
+const detectScrollShift = (
+	previousLines: string[],
+	nextLines: string[],
+): ScrollShift | undefined => {
+	const height = nextLines.length;
+	if (height < 4 || height !== previousLines.length) {
+		return undefined;
+	}
+
+	const required = Math.ceil(height * minShiftedCoreRatio);
+
+	for (let rows = 1; rows <= Math.min(maxScrollShift, height - 1); rows++) {
+		// Content moved up: nextLines[i] === previousLines[i + rows] over the
+		// overlap [0, height - rows); the bottom `rows` lines are new.
+		let up = 0;
+		let upFirst = -1;
+		let upLast = -1;
+		for (let i = 0; i < height - rows; i++) {
+			if (nextLines[i] !== previousLines[i + rows]) {
+				continue;
+			}
+
+			up++;
+			if (nextLines[i] === previousLines[i]) {
+				continue;
+			}
+
+			upFirst = upFirst < 0 ? i : upFirst;
+			upLast = i;
+		}
+
+		if (up >= required && upFirst >= 0 && upLast - upFirst + 1 >= required) {
+			return {rows, start: upFirst};
+		}
+
+		// Content moved down: nextLines[i] === previousLines[i - rows]; the top
+		// `rows` lines of the shifted band are new.
+		let down = 0;
+		let downFirst = -1;
+		let downLast = -1;
+		for (let i = rows; i < height; i++) {
+			if (nextLines[i] !== previousLines[i - rows]) {
+				continue;
+			}
+
+			down++;
+			if (nextLines[i] === previousLines[i]) {
+				continue;
+			}
+
+			downFirst = downFirst < 0 ? i : downFirst;
+			downLast = i;
+		}
+
+		if (
+			down >= required &&
+			downFirst >= 0 &&
+			downLast - downFirst + 1 >= required
+		) {
+			return {rows: -rows, start: downFirst - rows};
+		}
+	}
+
+	return undefined;
 };
 
 const createStandard = (
@@ -303,8 +395,45 @@ const createIncremental = (
 
 		buffer.push(returnPrefix);
 
-		// Clear extra lines if the current content's line count is lower than the previous.
-		if (visibleCount < previousVisible) {
+		const prevVisible = previousLines.slice(0, previousVisible);
+		const nextVisible = nextLines.slice(0, visibleCount);
+		const shift =
+			process.env['NUVIN_INK_NO_SCROLL_OPT'] === '1' ||
+			activeCursor !== undefined ||
+			visibleCount !== previousVisible
+				? undefined
+				: detectScrollShift(prevVisible, nextVisible);
+
+		let diffPrevious = previousLines;
+		let loopStart = 0;
+
+		if (shift) {
+			const k = Math.abs(shift.rows);
+			const {start} = shift;
+			const shiftedPrevious =
+				shift.rows > 0
+					? [
+							...prevVisible.slice(0, start),
+							...prevVisible.slice(start + k),
+							...blankLines(k),
+						]
+					: [
+							...prevVisible.slice(0, start),
+							...blankLines(k),
+							...prevVisible.slice(start, prevVisible.length - k),
+						];
+
+			// IL/DL at the first shifted row: lines above sticky chrome stay put.
+			// Without a scroll region this also moves rows below the band, which
+			// the ordinary diff then restores.
+			buffer.push(
+				ansiEscapes.cursorUp(previousLines.length - 1 - start),
+				shift.rows > 0 ? `\u001B[${k}M` : `\u001B[${k}L`,
+			);
+			diffPrevious = shiftedPrevious;
+			loopStart = start;
+		} else if (visibleCount < previousVisible) {
+			// Clear extra lines if the current content's line count is lower than the previous.
 			const previousHadTrailingNewline = previousOutput.endsWith('\n');
 			const extraSlot = previousHadTrailingNewline ? 1 : 0;
 			buffer.push(
@@ -315,11 +444,11 @@ const createIncremental = (
 			buffer.push(ansiEscapes.cursorUp(previousLines.length - 1));
 		}
 
-		for (let i = 0; i < visibleCount; i++) {
+		for (let i = loopStart; i < visibleCount; i++) {
 			const isLastLine = i === visibleCount - 1;
 
 			// We do not write lines if the contents are the same. This prevents flickering during renders.
-			if (nextLines[i] === previousLines[i]) {
+			if (nextLines[i] === diffPrevious[i]) {
 				// Don't move past the last line when there's no trailing newline,
 				// otherwise the cursor overshoots the rendered block.
 				if (!isLastLine || hasTrailingNewline) {

@@ -301,6 +301,12 @@ export default class Output {
 							const from = x < clip.x1! ? clip.x1! - x : 0;
 							const width = this.caches.getStringWidth(line);
 							const to = x + width > clip.x2! ? clip.x2! - x : width;
+							// Fully-inside writes are the common case for culled VLBox
+							// rows. slice-ansi still tokenizes the whole string, which
+							// dominates paint of truecolor modal/transcript frames.
+							if (from === 0 && to === width) {
+								return line;
+							}
 
 							return sliceAnsi(line, from, to);
 						});

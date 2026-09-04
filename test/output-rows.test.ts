@@ -77,3 +77,16 @@ test('Output.get without options behaves as before', t => {
 	t.is(result.plainRows, undefined);
 	t.is(result.maskRows, undefined);
 });
+
+test('fully-inside horizontal clip is a no-op on write bytes', t => {
+	const fill = `\u001B[48;2;10;20;30m${' '.repeat(8)}\u001B[49m`;
+	const unclipped = new Output({width: 20, height: 1});
+	unclipped.write(2, 0, fill, {transformers: []});
+
+	const clipped = new Output({width: 20, height: 1});
+	clipped.clip({x1: 0, x2: 20, y1: 0, y2: 1});
+	clipped.write(2, 0, fill, {transformers: []});
+	clipped.unclip();
+
+	t.is(clipped.get().output, unclipped.get().output);
+});
