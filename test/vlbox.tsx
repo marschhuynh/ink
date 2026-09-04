@@ -509,6 +509,61 @@ test('VLBox culls off-screen subtrees before renderer traversal', async t => {
 	instance.unmount();
 });
 
+test('VLBox culls off-screen descendants of an indexed sticky', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const offscreenRefs = Array.from({length: 30}, () =>
+		React.createRef<BoxRef>(),
+	);
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={12}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box position="sticky" top={0} width={12} height={1} flexShrink={0}>
+				<Text>HEADER</Text>
+				{offscreenRefs.map((ref, index) => {
+					const top = 10 + index * 2;
+					return (
+						<Box
+							key={top}
+							ref={ref}
+							position="absolute"
+							top={top}
+							width={200}
+							height={2}
+							backgroundColor="blue"
+						/>
+					);
+				})}
+			</Box>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	t.true(stdout.get().split('\n')[0]?.includes('HEADER'));
+	for (const ref of offscreenRefs) {
+		t.is(ref.current?.getPaintOrder(), undefined);
+		t.is(ref.current?.internal_lastSurfaceWriteCount, undefined);
+	}
+
+	t.true(
+		(rootOf(viewportRef.current!).internal_lastRenderVisitCount ?? 999) < 15,
+	);
+});
+
 test('VLBox matches Box output for arbitrary retained layout', t => {
 	const cases: Array<{
 		name: string;

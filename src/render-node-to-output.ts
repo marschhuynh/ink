@@ -57,6 +57,7 @@ type ScrollContext = {
 	borderRight: number;
 	scrollOffset: {x: number; y: number};
 	stickyNodes: StickyNodeInfo[];
+	cullingViewport?: CullingViewport;
 	// Present (including empty) for VLBox scroll containers with current sticky
 	// index metadata. Undefined for normal Box so traversal-time stickyNodes remain.
 	indexedStickyCandidates?: readonly StickyCandidate[];
@@ -137,6 +138,7 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 		parentBounds,
 		paintState,
 	} = context;
+	const {cullingViewport} = scrollContext;
 	const {x: offsetX, y: offsetY} = position;
 	const {top: parentTop, bottom: parentBottom} = parentBounds;
 	const {yogaNode} = node;
@@ -185,6 +187,12 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 			continue;
 		}
 
+		const childX = x + childYoga.getComputedLeft();
+		const childY = y + childYoga.getComputedTop();
+		if (shouldCullNode(child, childX, childY, cullingViewport)) {
+			continue;
+		}
+
 		if (child.nodeName === 'ink-text') {
 			let text = squashTextNodes(child);
 
@@ -199,8 +207,6 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 				}
 
 				text = applyPaddingToText(child, text);
-				const childX = x + childYoga.getComputedLeft();
-				const childY = y + childYoga.getComputedTop();
 				const childTransformers =
 					typeof child.internal_transform === 'function'
 						? [child.internal_transform, ...newTransformers]
@@ -211,8 +217,6 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 				});
 			}
 		} else if (child.nodeName === 'ink-box') {
-			const childX = x + childYoga.getComputedLeft();
-			const childY = y + childYoga.getComputedTop();
 			renderBackground(childX, childY, child, output);
 			renderBorder(childX, childY, child, output);
 			renderNodeToOutput(child, output, {
@@ -221,6 +225,8 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 				transformers: newTransformers,
 				skipStaticElements: false,
 				paintState,
+				cullingViewport,
+				inStickySubtree: true,
 			});
 		}
 	}
@@ -371,6 +377,7 @@ const renderNodeToOutput = (
 		parentBottom?: number;
 		paintState: PaintState;
 		cullingViewport?: CullingViewport;
+		inStickySubtree?: boolean;
 	},
 ) => {
 	const {
@@ -383,6 +390,7 @@ const renderNodeToOutput = (
 		parentBottom = Infinity,
 		paintState,
 		cullingViewport,
+		inStickySubtree = false,
 	} = options;
 
 	if (skipStaticElements && node.internal_static) {
@@ -403,6 +411,10 @@ const renderNodeToOutput = (
 
 		if (shouldCullNode(node, x, y, cullingViewport)) {
 			return;
+		}
+
+		if (inStickySubtree && node.style.position === 'sticky' && !scrollContext) {
+			node.internal_stickyRect = {x, y};
 		}
 
 		// Count only nodes accepted for expensive traversal after culling.
@@ -532,6 +544,12 @@ const renderNodeToOutput = (
 				isScrollContainer && node.internal_scrollOffset
 					? node.internal_scrollOffset
 					: {x: 0, y: 0};
+			const childCullingViewport = getChildCullingViewport(
+				node,
+				x,
+				y,
+				cullingViewport,
+			);
 			const newScrollContext: ScrollContext | undefined = isScrollContainer
 				? {
 						containerX: x,
@@ -544,6 +562,7 @@ const renderNodeToOutput = (
 						borderRight: yogaNode.getComputedBorder(Yoga.EDGE_RIGHT),
 						scrollOffset,
 						stickyNodes: [],
+						cullingViewport: childCullingViewport,
 						// Mode is scroll-container, not nonzero offset: zero-offset VLBox
 						// still paints stickies from the index when metadata is current.
 						indexedStickyCandidates: node.internal_viewportCulling
@@ -559,13 +578,6 @@ const renderNodeToOutput = (
 				return aZ - bZ;
 			});
 
-			const childCullingViewport = getChildCullingViewport(
-				node,
-				x,
-				y,
-				cullingViewport,
-			);
-
 			for (const childNode of sortedChildren) {
 				renderNodeToOutput(childNode as DOMElement, output, {
 					offsetX: x - scrollOffset.x,
@@ -577,6 +589,7 @@ const renderNodeToOutput = (
 					parentBottom: childParentBottom,
 					paintState,
 					cullingViewport: childCullingViewport,
+					inStickySubtree,
 				});
 			}
 
