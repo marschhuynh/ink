@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import test from 'ava';
 import delay from 'delay';
+import stripAnsi from 'strip-ansi';
 import {
 	Box,
 	type BoxRef,
@@ -657,4 +658,165 @@ test('VLBox sticky index rebuilds after Yoga-clean ownership and z-index changes
 	const nestedLayoutY = nestedRef.current!.getBounds().y;
 	const outerScrollY = viewportRef.current!.getScrollPosition().y;
 	t.is(nestedStickyRef.current?.getBounds().y, nestedLayoutY - outerScrollY);
+});
+
+test('VLBox bounds direct-child surface work beneath a pinned indexed sticky', async t => {
+	const stdout = createStdout(40);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const stickyRef = React.createRef<BoxRef>();
+	const surfaceRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={12}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box height={1} flexShrink={0}>
+				<Text>before</Text>
+			</Box>
+			<Box
+				ref={stickyRef}
+				position="sticky"
+				top={0}
+				width={12}
+				height={1}
+				flexShrink={0}
+			>
+				<Box
+					ref={surfaceRef}
+					position="absolute"
+					width={500}
+					height={500}
+					borderStyle="single"
+					backgroundColor="red"
+				/>
+			</Box>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	const surface = surfaceRef.current!;
+	let surfaceWriteCount = surface.internal_lastSurfaceWriteCount;
+	let surfaceCellCount = surface.internal_lastSurfaceCellCount;
+	let maximumWriteCount = surfaceWriteCount ?? 0;
+	let maximumCellCount = surfaceCellCount ?? 0;
+	Object.defineProperty(surface, 'internal_lastSurfaceWriteCount', {
+		configurable: true,
+		get() {
+			return surfaceWriteCount;
+		},
+		set(value: number | undefined) {
+			surfaceWriteCount = value;
+			maximumWriteCount = Math.max(maximumWriteCount, value ?? 0);
+		},
+	});
+	Object.defineProperty(surface, 'internal_lastSurfaceCellCount', {
+		configurable: true,
+		get() {
+			return surfaceCellCount;
+		},
+		set(value: number | undefined) {
+			surfaceCellCount = value;
+			maximumCellCount = Math.max(maximumCellCount, value ?? 0);
+		},
+	});
+
+	viewportRef.current?.scrollTo({y: 1});
+	await instance.waitUntilRenderFlush();
+
+	const viewportBounds = viewportRef.current?.getBounds();
+	const stickyBounds = stickyRef.current?.getBounds();
+	t.truthy(viewportBounds);
+	t.truthy(stickyBounds);
+	t.is(stickyBounds!.y, viewportBounds!.y);
+	t.true(stripAnsi(stdout.get()).startsWith('┌───────────\n│'));
+	t.true(
+		maximumWriteCount < 40,
+		`writes ${maximumWriteCount} should stay viewport-bounded across resets`,
+	);
+	t.true(
+		maximumCellCount < 12 * 3 * 4,
+		`cells ${maximumCellCount} should stay viewport-bounded across resets`,
+	);
+	t.is(surface.internal_lastSurfaceWriteCount, maximumWriteCount);
+	t.is(surface.internal_lastSurfaceCellCount, maximumCellCount);
+});
+
+test('VLBox clears stale bounds when a nested sticky is culled with its indexed ancestor', async t => {
+	const stdout = createStdout(40);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const outerStickyRef = React.createRef<BoxRef>();
+	const nestedStickyRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={12}
+			height={4}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box height={3} flexDirection="column" flexShrink={0}>
+				<Box height={2} flexShrink={0} />
+				<Box
+					ref={outerStickyRef}
+					position="sticky"
+					top={0}
+					height={1}
+					flexShrink={0}
+				>
+					<Text>OUTER</Text>
+					<Box position="absolute" top={0} width={12} height={1}>
+						<Box
+							ref={nestedStickyRef}
+							position="sticky"
+							top={-1}
+							height={1}
+							flexShrink={0}
+						>
+							<Text>NESTED</Text>
+						</Box>
+					</Box>
+				</Box>
+			</Box>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	viewportRef.current?.scrollTo({y: 1});
+	await instance.waitUntilRenderFlush();
+	const visibleBounds = nestedStickyRef.current?.getBounds();
+	t.truthy(visibleBounds);
+	t.is(visibleBounds!.y, viewportRef.current!.getBounds().y);
+	t.truthy(nestedStickyRef.current?.getPaintOrder());
+
+	viewportRef.current?.scrollTo({y: 2});
+	await instance.waitUntilRenderFlush();
+
+	t.true(stripAnsi(stdout.get()).split('\n')[0]?.includes('OUTER'));
+	t.false(stripAnsi(stdout.get()).includes('NESTED'));
+	t.is(nestedStickyRef.current?.getPaintOrder(), undefined);
+	t.notDeepEqual(nestedStickyRef.current?.getBounds(), visibleBounds);
+	t.is(nestedStickyRef.current?.internal_stickyRect, undefined);
 });

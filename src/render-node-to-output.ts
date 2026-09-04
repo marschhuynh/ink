@@ -217,8 +217,6 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 				});
 			}
 		} else if (child.nodeName === 'ink-box') {
-			renderBackground(childX, childY, child, output);
-			renderBorder(childX, childY, child, output);
 			renderNodeToOutput(child, output, {
 				offsetX: x,
 				offsetY: y,
@@ -410,6 +408,14 @@ const renderNodeToOutput = (
 		const nodeHeight = yogaNode.getComputedHeight();
 
 		if (shouldCullNode(node, x, y, cullingViewport)) {
+			if (
+				inStickySubtree &&
+				node.style.position === 'sticky' &&
+				!scrollContext
+			) {
+				node.internal_stickyRect = undefined;
+			}
+
 			return;
 		}
 
