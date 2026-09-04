@@ -20,6 +20,29 @@ export type ElementNames =
 
 export type NodeNames = ElementNames | TextName;
 
+export type Rect = {left: number; top: number; right: number; bottom: number};
+
+export type NodeLayoutMetadata = {
+	epoch: number;
+	subtreePaintBounds: Rect;
+	hasUnboundedTransform: boolean;
+};
+
+export type StickyCandidate = {
+	node: DOMElement;
+	parentOffset: {x: number; y: number};
+	parentBounds: {top: number; bottom: number};
+	parentIsViewport: boolean;
+	transformers: OutputTransformer[];
+	paintOrder: number;
+};
+
+export type ScrollViewportMetadata = {
+	epoch: number;
+	contentExtent: {width: number; height: number};
+	stickyCandidates: StickyCandidate[];
+};
+
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export type DOMElement = {
 	nodeName: ElementNames;
@@ -84,6 +107,14 @@ export type DOMElement = {
 	internal_viewportCulling?: boolean;
 	// Root-only counter of committed nodes with internal_viewportCulling.
 	internal_viewportCullingCount?: number;
+	// Layout-metadata prepass cache (see layout-metadata.ts).
+	internal_layoutMetadata?: NodeLayoutMetadata;
+	// Root-only dirty flag forcing a metadata rebuild on the next prepass.
+	internal_layoutMetadataDirty?: boolean;
+	// VLBox viewport content extent + sticky index for the current layout epoch.
+	internal_scrollViewportMetadata?: ScrollViewportMetadata;
+	// Public <Transform> marks geometry-uncertain output; ordinary Text does not.
+	internal_transformAffectsGeometry?: boolean;
 	// The absolute position at which a `position: "sticky"` node was last drawn
 	// by `renderStickyNode`. While pinned this differs from the natural
 	// (yoga-ancestor-walk) position; `getBounds` prefers it so hit-testing lands
@@ -92,7 +123,6 @@ export type DOMElement = {
 	// check so a node that stops being sticky never reads a stale rect.
 	internal_stickyRect?: {x: number; y: number};
 } & InkNode;
-
 export type TextNode = {
 	nodeName: TextName;
 	nodeValue: string;

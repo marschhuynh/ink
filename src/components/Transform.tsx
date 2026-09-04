@@ -31,6 +31,7 @@ export default function Transform({
 
 	return (
 		<ink-text
+			internal_transformAffectsGeometry
 			style={{flexGrow: 0, flexShrink: 1, flexDirection: 'row'}}
 			internal_transform={transform}
 		>

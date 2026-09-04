@@ -203,3 +203,117 @@ test('appending a host text child to a connected Text does not throw', async t =
 	t.is(contentWrites.at(-1), 'hello');
 	instance.unmount();
 });
+
+test('VLBox reuses current-epoch metadata and cached content extent', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{Array.from({length: 10}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	const metadata = viewportRef.current?.internal_scrollViewportMetadata;
+	t.truthy(metadata);
+	t.is(metadata?.contentExtent.height, 10);
+	const epoch = metadata?.epoch;
+	viewportRef.current?.scrollToBottom();
+	await waitForWriteCount(stdout, 2);
+	t.is(viewportRef.current?.internal_scrollViewportMetadata, metadata);
+	t.is(viewportRef.current?.internal_scrollViewportMetadata?.epoch, epoch);
+	t.deepEqual(viewportRef.current?.getScrollPosition(), {x: 0, y: 7});
+	instance.unmount();
+});
+
+test('VLBox content extent includes absolute children and respects nested clips', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={5}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box position="absolute" left={14} top={8} width={6} height={2}>
+				<Text>abs</Text>
+			</Box>
+			<Box width={4} height={4} overflow="hidden" flexShrink={0}>
+				<Box position="absolute" left={30} top={30} width={20} height={20}>
+					<Text>escape</Text>
+				</Box>
+			</Box>
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	t.deepEqual(
+		viewportRef.current?.internal_scrollViewportMetadata?.contentExtent,
+		{width: 20, height: 10},
+	);
+	instance.unmount();
+});
+
+test('VLBox rebuilds metadata after a Yoga-clean culling-semantics update', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+			zIndex={0}
+		>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	const firstMetadata = viewportRef.current?.internal_scrollViewportMetadata;
+	const layoutEpoch = rootOf(viewportRef.current!).internal_layoutEpoch;
+	t.truthy(firstMetadata);
+
+	instance.rerender(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="hidden"
+			flexDirection="column"
+			zIndex={1}
+		>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+	);
+	await waitForWriteCount(stdout, 2);
+
+	t.is(rootOf(viewportRef.current!).internal_layoutEpoch, layoutEpoch);
+	t.not(viewportRef.current?.internal_scrollViewportMetadata, firstMetadata);
+	t.truthy(viewportRef.current?.internal_scrollViewportMetadata);
+	instance.unmount();
+});
