@@ -2,7 +2,7 @@ import wrapAnsi from 'wrap-ansi';
 import cliTruncate from 'cli-truncate';
 import {type Styles} from './styles.js';
 
-export const WRAP_TEXT_CACHE_MAX = 256;
+export const wrapTextCacheMax = 256;
 
 const cache = new Map<string, string>();
 
@@ -52,7 +52,7 @@ const wrapText = (
 	}
 
 	cache.set(cacheKey, wrappedText);
-	if (cache.size > WRAP_TEXT_CACHE_MAX) {
+	if (cache.size > wrapTextCacheMax) {
 		const oldestKey = cache.keys().next().value;
 		if (oldestKey !== undefined) {
 			cache.delete(oldestKey);

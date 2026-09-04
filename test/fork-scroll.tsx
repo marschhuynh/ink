@@ -142,8 +142,7 @@ test('getScrollPosition and scrollToBottom clamp to the valid range', async t =>
 test('getBounds reports the rendered box metrics', t => {
 	const stdout = createStdout(100);
 	let capturedBounds:
-		| {x: number; y: number; width: number; height: number}
-		| undefined;
+		{x: number; y: number; width: number; height: number} | undefined;
 
 	function BoundsFixture() {
 		const ref = useRef<ScrollableBoxRef>(null);

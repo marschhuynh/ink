@@ -133,7 +133,7 @@ test('sticky getBounds() reports the pinned drawn position, not the natural-flow
 	// the pre-fix yoga-ancestor walk would have reported it).
 	t.not(headerBounds!.y, 3);
 
-	// getBounds() returns the pinned position because renderStickyNode recorded
+	// GetBounds() returns the pinned position because renderStickyNode recorded
 	// the drawn rect on the element.
 	t.truthy(headerRef.current?.internal_stickyRect);
 	t.is(headerRef.current?.internal_stickyRect?.y, containerBounds!.y);

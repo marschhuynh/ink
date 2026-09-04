@@ -44,8 +44,7 @@ const zeroByte = 0x30;
 const nineByte = 0x39;
 
 type KittyQueryResponseMatch =
-	| {state: 'complete'; endIndex: number}
-	| {state: 'partial'};
+	{state: 'complete'; endIndex: number} | {state: 'partial'};
 
 const isDigitByte = (byte: number): boolean =>
 	byte >= zeroByte && byte <= nineByte;
@@ -334,8 +333,7 @@ export default class Ink {
 	private readonly log: LogUpdate;
 	private cursorPosition: CursorPosition | undefined;
 	private readonly throttledLog:
-		| LogUpdate
-		| DebouncedFunc<(output: string) => void>;
+		LogUpdate | DebouncedFunc<(output: string) => void>;
 
 	private readonly isScreenReaderEnabled: boolean;
 	private readonly interactive: boolean;
@@ -1003,6 +1001,26 @@ export default class Ink {
 		}
 	}
 
+	patchConsole(): void {
+		if (this.options.debug) {
+			return;
+		}
+
+		this.restoreConsole = patchConsole((stream, data) => {
+			if (stream === 'stdout') {
+				this.writeToStdout(data);
+			}
+
+			if (stream === 'stderr') {
+				const isReactMessage = data.startsWith('The above error occurred');
+
+				if (!isReactMessage) {
+					this.writeToStderr(data);
+				}
+			}
+		});
+	}
+
 	private getPhysicalEraseOptions(): {eraseLineCount: number} | undefined {
 		if (
 			!this.options.stdout.isTTY ||
@@ -1023,26 +1041,6 @@ export default class Ink {
 				terminalWidth,
 			),
 		};
-	}
-
-	patchConsole(): void {
-		if (this.options.debug) {
-			return;
-		}
-
-		this.restoreConsole = patchConsole((stream, data) => {
-			if (stream === 'stdout') {
-				this.writeToStdout(data);
-			}
-
-			if (stream === 'stderr') {
-				const isReactMessage = data.startsWith('The above error occurred');
-
-				if (!isReactMessage) {
-					this.writeToStderr(data);
-				}
-			}
-		});
 	}
 
 	private setAlternateScreen(enabled: boolean): void {
