@@ -1409,11 +1409,19 @@ or provide input handling or a scrollbar.
 
 #### Warm-scroll benchmark
 
-The production-path benchmark mounts a 424×95 terminal fixture (6,000 mixed
-rows with nested clips, absolute children, and sticky headers) once under `Box`
+The production-path benchmark mounts a 424×95 terminal fixture once under `Box`
 and once under `VLBox`, warms five imperative `scrollTo({y: current + 1})`
 steps, then measures at least 30 committed frames through `onRender` with
-`incrementalRendering: true` and `maxFps: 1000` (never `debug: true`).
+`incrementalRendering: true`, `maxFps: 1000`, `interactive: true`, and
+`patchConsole: false` (never `debug: true`). Stderr is a separate stream so
+diagnostics cannot contaminate checkpoint stdout.
+
+The large fixture is **6,000 mixed rows grouped into `SECTION_SIZE=25`
+retained subtrees** (sticky headers, nested clips, absolute children,
+markdown-like multi-`Text`, nested hosts). That is the supported
+retained-subtree benchmark shape: VLBox culls off-screen section chunks as
+units. It is **not** flat-list virtualization. A 6,000-row list of direct
+siblings still pays O(n) sibling probes before per-node cull.
 
 ```sh
 npm run benchmark:vlbox -- --samples=30
@@ -1424,12 +1432,15 @@ Reported metrics:
 
 - median / p95 `onRender.renderTime` (renderer/culling work)
 - median / p95 end-to-end wall time per step
+- per-step stdout-byte delta median / p95 / max (complete multi-chunk write-log delta for each measured frame)
 - maximum `internal_lastRenderVisitCount`
-- checkpoint ANSI parity at scroll offsets 1, 10, and 30
+- checkpoint ANSI parity at scroll offsets 1, 10, and 30 (isolated per-frame stdout delta, not cumulative write history)
 - VLBox layout-epoch delta across measured scrolls
 
-Release gates (`--release-check`) use median `renderTime` only:
+Release gates (`--release-check`) use median `renderTime` only, and reject
+`--samples` below 30:
 
+- `--samples >= 30`
 - VLBox large render median `<= 16 ms`
 - Box / VLBox large render speedup `>= 5x`
 - VLBox small-fixture render median within `10%` of Box
