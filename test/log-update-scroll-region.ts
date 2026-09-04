@@ -1,0 +1,142 @@
+import process from 'node:process';
+import test from 'ava';
+import logUpdate from '../src/log-update.js';
+import createStdout from './helpers/create-stdout.js';
+
+const csi = '\u001B[';
+
+const secondWrite = (stdout: ReturnType<typeof createStdout>): string =>
+	stdout.get();
+
+test('incremental scroll region - shift up rewrites only edge lines', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+
+	render(['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'].join('\n'));
+	render(['row 3', 'row 4', 'row 5', 'row 6', 'new 7', 'new 8'].join('\n'));
+
+	const write = secondWrite(stdout);
+	t.true(
+		write.includes(`${csi}2M`),
+		`expected CSI 2 M (delete 2 lines / scroll up), got: ${JSON.stringify(write)}`,
+	);
+	t.true(write.includes('new 7'));
+	t.true(write.includes('new 8'));
+	t.false(write.includes('row 3'));
+	t.false(write.includes('row 4'));
+	t.false(write.includes('row 6'));
+});
+
+test('incremental scroll region - shift down emits insert-lines and rewrites top edge', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+
+	render(['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'].join('\n'));
+	render(['new 0', 'new 1', 'row 1', 'row 2', 'row 3', 'row 4'].join('\n'));
+
+	const write = secondWrite(stdout);
+	t.true(
+		write.includes(`${csi}2L`),
+		`expected CSI 2 L (insert 2 lines / scroll down), got: ${JSON.stringify(write)}`,
+	);
+	t.true(write.includes('new 0'));
+	t.true(write.includes('new 1'));
+	t.false(write.includes('row 3'));
+	t.false(write.includes('row 5'));
+});
+
+test('incremental scroll region - centered interior shift does not IL/DL at frame top', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+
+	render(
+		['HEAD', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'FOOT'].join('\n'),
+	);
+	render(
+		['HEAD', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'b9', 'FOOT'].join('\n'),
+	);
+
+	const write = secondWrite(stdout);
+	t.true(
+		write.includes(`${csi}1M`),
+		`expected CSI 1 M at the interior body, got: ${JSON.stringify(write)}`,
+	);
+	// Sticky chrome above the shifted band must not be rewritten.
+	t.false(write.includes('HEAD'));
+	// Interior body moved via IL/DL, so it must not be rewritten.
+	t.false(write.includes('b4'));
+	t.false(write.includes('b5'));
+	// Newly exposed edge line is rewritten.
+	t.true(write.includes('b9'));
+});
+
+test('incremental scroll region - below-threshold change stays byte-identical to the legacy diff', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+
+	render(['a', 'b', 'c', 'd', 'e', 'f'].join('\n'));
+	render(['a', 'X', 'Y', 'Z', 'e', 'f'].join('\n'));
+
+	const write = secondWrite(stdout);
+	t.false(write.includes(`${csi}M`));
+	t.false(write.includes(`${csi}L`));
+	t.is(
+		write,
+		'\u001B[5A\u001B[E\u001B[1GX\u001B[K\n\u001B[1GY\u001B[K\n\u001B[1GZ\u001B[K\n\u001B[E',
+	);
+});
+
+test('incremental scroll region - cache correctness after shift', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+
+	render(['r1', 'r2', 'r3', 'r4', 'r5', 'r6'].join('\n'));
+	render(['r3', 'r4', 'r5', 'r6', 'n7', 'n8'].join('\n'));
+	render(['r3', 'r9', 'r5', 'r6', 'n7', 'n8'].join('\n'));
+
+	const thirdWrite = secondWrite(stdout);
+	t.true(
+		thirdWrite.includes('r9'),
+		`expected r9 rewrite, got: ${JSON.stringify(thirdWrite)}`,
+	);
+	t.false(
+		thirdWrite.includes('r5\n'),
+		`unchanged r5 must not be rewritten, got: ${JSON.stringify(thirdWrite)}`,
+	);
+	t.false(thirdWrite.includes(`${csi}M`));
+	t.false(thirdWrite.includes(`${csi}L`));
+});
+
+test('incremental scroll region - height change skips scroll path', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+
+	render(['r1', 'r2', 'r3', 'r4', 'r5', 'r6'].join('\n'));
+	render(['r3', 'r4', 'r5', 'r6'].join('\n'));
+
+	const write = secondWrite(stdout);
+	t.false(write.includes(`${csi}M`));
+	t.false(write.includes(`${csi}L`));
+});
+
+test('incremental scroll region - escape hatch keeps legacy bytes for a pure shift', t => {
+	const previous = process.env['NUVIN_INK_NO_SCROLL_OPT'];
+	process.env['NUVIN_INK_NO_SCROLL_OPT'] = '1';
+	try {
+		const stdout = createStdout();
+		const render = logUpdate.create(stdout, {incremental: true});
+		render(['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'].join('\n'));
+		render(['row 3', 'row 4', 'row 5', 'row 6', 'new 7', 'new 8'].join('\n'));
+
+		t.is(
+			secondWrite(stdout),
+			'\u001B[5A\u001B[1Grow 3\u001B[K\n\u001B[1Grow 4\u001B[K\n\u001B[1Grow 5\u001B[K\n\u001B[1Grow 6\u001B[K\n\u001B[1Gnew 7\u001B[K\n\u001B[1Gnew 8\u001B[K',
+		);
+	} finally {
+		if (previous === undefined) {
+			delete process.env['NUVIN_INK_NO_SCROLL_OPT'];
+		} else {
+			process.env['NUVIN_INK_NO_SCROLL_OPT'] = previous;
+		}
+	}
+});

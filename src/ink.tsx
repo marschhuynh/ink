@@ -1142,19 +1142,32 @@ export default class Ink {
 			hadPhysicalFrame && this.lastOutputToRender !== '';
 		const columnsDecreased =
 			Boolean(isTty) && terminalWidth < this.lastTerminalWidth;
+		const widthChanged =
+			Boolean(isTty) &&
+			this.lastTerminalWidth !== 0 &&
+			terminalWidth !== this.lastTerminalWidth;
 		const outputWillRender =
 			hasStaticOutput || this.log.willRender(outputToRender);
+		// Widest-line on a truecolor frame is several milliseconds. Ordinary
+		// same-width updates of a fitted frame cannot have reflowed, so skip
+		// classification unless the width changed or the last painted frame was
+		// already soft-wrapped.
 		const shouldClassifyNextFrame =
-			Boolean(isTty) && (columnsDecreased || outputWillRender);
+			Boolean(isTty) &&
+			outputWillRender &&
+			(this.lastTerminalWidth === 0 ||
+				widthChanged ||
+				this.lastPhysicalFrameWasSoftWrapped);
 		const nextFrameIsSoftWrapped =
 			shouldClassifyNextFrame &&
 			isOutputSoftWrapped(outputToRender, terminalWidth);
 		const shouldRepairReflow =
 			Boolean(isTty) &&
 			hasCachedPhysicalOutput &&
+			outputWillRender &&
 			(columnsDecreased ||
-				((this.lastPhysicalFrameWasSoftWrapped || nextFrameIsSoftWrapped) &&
-					outputWillRender));
+				(widthChanged &&
+					(this.lastPhysicalFrameWasSoftWrapped || nextFrameIsSoftWrapped)));
 		const reflowedLineCount = shouldRepairReflow
 			? getReflowedLineCount(this.lastOutputToRender, terminalWidth)
 			: 0;
@@ -1196,7 +1209,7 @@ export default class Ink {
 			this.hasPhysicalFrame = true;
 			this.lastPhysicalFrameWasSoftWrapped = shouldClassifyNextFrame
 				? nextFrameIsSoftWrapped
-				: Boolean(isTty) && isOutputSoftWrapped(outputToRender, terminalWidth);
+				: this.lastPhysicalFrameWasSoftWrapped;
 
 			if (sync) {
 				this.options.stdout.write(esu);
@@ -1250,7 +1263,7 @@ export default class Ink {
 		if (didWriteFrame) {
 			this.lastPhysicalFrameWasSoftWrapped = shouldClassifyNextFrame
 				? nextFrameIsSoftWrapped
-				: Boolean(isTty) && isOutputSoftWrapped(outputToRender, terminalWidth);
+				: this.lastPhysicalFrameWasSoftWrapped;
 		}
 
 		this.lastViewportRows = viewportRows;
