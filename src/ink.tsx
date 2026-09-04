@@ -575,6 +575,7 @@ export default class Ink {
 			yoga.setWidth(terminalWidth);
 			this.lastLayoutWidth = terminalWidth;
 		}
+
 		if (!widthChanged && !yoga.isDirty()) return;
 		yoga.calculateLayout(undefined, undefined, Yoga.DIRECTION_LTR);
 		dom.incrementLayoutEpoch(this.rootNode);
