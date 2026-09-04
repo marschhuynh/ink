@@ -18,6 +18,7 @@ import {
 	createNode,
 	setAttribute,
 	type DOMNodeAttribute,
+	type DOMNode,
 	type TextNode,
 	type ElementNames,
 	type DOMElement,
@@ -87,6 +88,82 @@ type Props = Record<string, unknown>;
 
 type HostContext = {
 	isInsideText: boolean;
+};
+
+const countViewportCullingNodes = (node: DOMElement): number =>
+	(node.internal_viewportCulling ? 1 : 0) +
+	node.childNodes.reduce(
+		(total, child) =>
+			total +
+			(child.nodeName === '#text' ? 0 : countViewportCullingNodes(child)),
+		0,
+	);
+
+const connectedRoot = (node: DOMElement): DOMElement | undefined => {
+	let root = node;
+	while (root.parentNode) root = root.parentNode;
+	return root.nodeName === 'ink-root' ? root : undefined;
+};
+
+const adjustViewportCount = (
+	root: DOMElement | undefined,
+	delta: number,
+): void => {
+	if (!root || delta === 0) return;
+	root.internal_viewportCullingCount = Math.max(
+		0,
+		(root.internal_viewportCullingCount ?? 0) + delta,
+	);
+};
+
+const appendChildWithViewportCount = (
+	parent: DOMElement,
+	child: DOMElement,
+): void => {
+	const oldRoot = connectedRoot(child);
+	appendChildNode(parent, child);
+	const newRoot = connectedRoot(child);
+	if (oldRoot !== newRoot) {
+		const count = countViewportCullingNodes(child);
+		adjustViewportCount(oldRoot, -count);
+		adjustViewportCount(newRoot, count);
+	}
+};
+
+const insertBeforeWithViewportCount = (
+	parent: DOMElement,
+	child: DOMNode,
+	beforeChild: DOMNode,
+): void => {
+	if (child.nodeName === '#text') {
+		insertBeforeNode(parent, child, beforeChild);
+		return;
+	}
+
+	const oldRoot = connectedRoot(child);
+	insertBeforeNode(parent, child, beforeChild);
+	const newRoot = connectedRoot(child);
+	if (oldRoot !== newRoot) {
+		const count = countViewportCullingNodes(child);
+		adjustViewportCount(oldRoot, -count);
+		adjustViewportCount(newRoot, count);
+	}
+};
+
+const removeChildWithViewportCount = (
+	parent: DOMElement,
+	removeNode: DOMNode,
+): void => {
+	let oldRoot: DOMElement | undefined;
+	let count = 0;
+	if (removeNode.nodeName !== '#text') {
+		oldRoot = connectedRoot(removeNode);
+		count = countViewportCullingNodes(removeNode);
+	}
+
+	removeChildNode(parent, removeNode);
+	cleanupYogaNode(removeNode.yogaNode);
+	adjustViewportCount(oldRoot, -count);
 };
 
 let currentUpdatePriority = NoEventPriority;
@@ -239,6 +316,11 @@ export default createReconciler<
 				continue;
 			}
 
+			if (key === 'internal_viewportCulling') {
+				node.internal_viewportCulling = value === true;
+				continue;
+			}
+
 			setAttribute(node, key, value as DOMNodeAttribute);
 		}
 
@@ -268,8 +350,8 @@ export default createReconciler<
 		node.yogaNode?.setDisplay(Yoga.DISPLAY_FLEX);
 	},
 	appendInitialChild: appendChildNode,
-	appendChild: appendChildNode,
-	insertBefore: insertBeforeNode,
+	appendChild: appendChildWithViewportCount,
+	insertBefore: insertBeforeWithViewportCount,
 	finalizeInitialChildren() {
 		return false;
 	},
@@ -294,13 +376,16 @@ export default createReconciler<
 	getInstanceFromNode: () => null,
 	prepareScopeUpdate() {},
 	getInstanceFromScope: () => null,
-	appendChildToContainer: appendChildNode,
-	insertInContainerBefore: insertBeforeNode,
+	appendChildToContainer: appendChildWithViewportCount,
+	insertInContainerBefore: insertBeforeWithViewportCount,
 	removeChildFromContainer(node, removeNode) {
-		removeChildNode(node, removeNode);
-		cleanupYogaNode(removeNode.yogaNode);
+		removeChildWithViewportCount(node, removeNode);
 
-		if (removeNode.internal_static && currentRootNode) {
+		if (
+			removeNode.nodeName !== '#text' &&
+			removeNode.internal_static &&
+			currentRootNode
+		) {
 			currentRootNode.staticNode = undefined;
 		}
 	},
@@ -358,10 +443,13 @@ export default createReconciler<
 		setTextNodeValue(node, newText);
 	},
 	removeChild(node, removeNode) {
-		removeChildNode(node, removeNode);
-		cleanupYogaNode(removeNode.yogaNode);
+		removeChildWithViewportCount(node, removeNode);
 
-		if (removeNode.internal_static && currentRootNode) {
+		if (
+			removeNode.nodeName !== '#text' &&
+			removeNode.internal_static &&
+			currentRootNode
+		) {
 			currentRootNode.staticNode = undefined;
 		}
 	},

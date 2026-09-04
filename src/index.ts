@@ -4,6 +4,8 @@ export type {RenderToStringOptions} from './render-to-string.js';
 export {default as renderToString} from './render-to-string.js';
 export type {Props as BoxProps, BoxRef, PaintOrder} from './components/Box.js';
 export {default as Box} from './components/Box.js';
+export type {VLBoxProps, VLBoxRef} from './components/VLBox.js';
+export {default as VLBox} from './components/VLBox.js';
 export type {Props as TextProps} from './components/Text.js';
 export {default as Text} from './components/Text.js';
 export type {Props as AppProps} from './components/AppContext.js';

@@ -81,218 +81,226 @@ export type Props = Except<Styles, 'textWrap'> & {
 /**
 `<Box>` is an essential Ink component to build your layout. It's like `<div style="display: flex">` in the browser.
 */
-const Box = forwardRef<BoxRef, PropsWithChildren<Props>>(
-	(
-		{
-			children,
-			backgroundColor,
-			'aria-label': ariaLabel,
-			'aria-hidden': ariaHidden,
-			'aria-role': role,
-			'aria-state': ariaState,
-			...style
-		},
-		ref,
-	) => {
-		const internalRef = useRef<DOMElement>(null);
-		const scrollStateRef = useRef({x: 0, y: 0});
-		const [scrollVersion, setScrollVersion] = useState(0);
+export const createBoxComponent = (
+	displayName: string,
+	viewportCulling: boolean,
+) => {
+	const Component = forwardRef<BoxRef, PropsWithChildren<Props>>(
+		(
+			{
+				children,
+				backgroundColor,
+				'aria-label': ariaLabel,
+				'aria-hidden': ariaHidden,
+				'aria-role': role,
+				'aria-state': ariaState,
+				...style
+			},
+			ref,
+		) => {
+			const internalRef = useRef<DOMElement>(null);
+			const scrollStateRef = useRef({x: 0, y: 0});
+			const [scrollVersion, setScrollVersion] = useState(0);
 
-		useImperativeHandle(ref, () => {
-			const element = internalRef.current;
-			if (!element) {
-				return null as unknown as BoxRef;
-			}
-
-			const getContentDimensions = () => {
-				const {yogaNode} = element;
-				if (!yogaNode) {
-					return {width: 0, height: 0};
+			useImperativeHandle(ref, () => {
+				const element = internalRef.current;
+				if (!element) {
+					return null as unknown as BoxRef;
 				}
 
-				let maxWidth = 0;
-				let maxHeight = 0;
-
-				const measureNode = (
-					node: typeof element,
-					offsetX: number,
-					offsetY: number,
-				) => {
-					for (const child of node.childNodes) {
-						if ('yogaNode' in child && child.yogaNode) {
-							const childYoga = child.yogaNode;
-							const childX = offsetX + childYoga.getComputedLeft();
-							const childY = offsetY + childYoga.getComputedTop();
-							const right = childX + childYoga.getComputedWidth();
-							const bottom = childY + childYoga.getComputedHeight();
-							maxWidth = Math.max(maxWidth, right);
-							maxHeight = Math.max(maxHeight, bottom);
-							measureNode(child as typeof element, childX, childY);
-						}
-					}
-				};
-
-				measureNode(element, 0, 0);
-
-				return {width: maxWidth, height: maxHeight};
-			};
-
-			const getMaxScroll = () => {
-				const {yogaNode} = element;
-				if (!yogaNode) {
-					return {x: 0, y: 0};
-				}
-
-				const containerWidth =
-					yogaNode.getComputedWidth() -
-					yogaNode.getComputedBorder(Yoga.EDGE_LEFT) -
-					yogaNode.getComputedBorder(Yoga.EDGE_RIGHT);
-				const containerHeight =
-					yogaNode.getComputedHeight() -
-					yogaNode.getComputedBorder(Yoga.EDGE_TOP) -
-					yogaNode.getComputedBorder(Yoga.EDGE_BOTTOM);
-				const content = getContentDimensions();
-
-				return {
-					x: Math.max(0, content.width - containerWidth),
-					y: Math.max(0, content.height - containerHeight),
-				};
-			};
-
-			return Object.assign(element, {
-				scrollTo({x, y}: {x?: number; y?: number}) {
-					const maxScroll = getMaxScroll();
-
-					if (x !== undefined) {
-						scrollStateRef.current.x = Math.max(0, Math.min(x, maxScroll.x));
-					}
-
-					if (y !== undefined) {
-						scrollStateRef.current.y = Math.max(0, Math.min(y, maxScroll.y));
-					}
-
-					element.internal_scrollOffset = {...scrollStateRef.current};
-					setScrollVersion(version => version + 1);
-				},
-				getScrollPosition() {
-					return {...scrollStateRef.current};
-				},
-				scrollToTop() {
-					scrollStateRef.current.y = 0;
-					element.internal_scrollOffset = {...scrollStateRef.current};
-					setScrollVersion(version => version + 1);
-				},
-				scrollToBottom() {
-					const maxScroll = getMaxScroll();
-					scrollStateRef.current.y = maxScroll.y;
-					element.internal_scrollOffset = {...scrollStateRef.current};
-					setScrollVersion(version => version + 1);
-				},
-				getBounds() {
+				const getContentDimensions = () => {
 					const {yogaNode} = element;
 					if (!yogaNode) {
-						return {x: 0, y: 0, width: 0, height: 0};
+						return {width: 0, height: 0};
 					}
 
-					let x = yogaNode.getComputedLeft();
-					let y = yogaNode.getComputedTop();
-					const width = yogaNode.getComputedWidth();
-					const height = yogaNode.getComputedHeight();
+					let maxWidth = 0;
+					let maxHeight = 0;
 
-					// A pinned `position: "sticky"` node is drawn away from its
-					// natural-flow position by `renderStickyNode`, which records the
-					// drawn rect on the element. Prefer it so hit-testing lands on the
-					// pinned copy. The live `position === 'sticky'` guard ensures a node
-					// that has since stopped being sticky never reads a stale rect.
-					const stickyRect = element.internal_stickyRect;
-					if (element.style.position === 'sticky' && stickyRect) {
-						return {x: stickyRect.x, y: stickyRect.y, width, height};
+					const measureNode = (
+						node: typeof element,
+						offsetX: number,
+						offsetY: number,
+					) => {
+						for (const child of node.childNodes) {
+							if ('yogaNode' in child && child.yogaNode) {
+								const childYoga = child.yogaNode;
+								const childX = offsetX + childYoga.getComputedLeft();
+								const childY = offsetY + childYoga.getComputedTop();
+								const right = childX + childYoga.getComputedWidth();
+								const bottom = childY + childYoga.getComputedHeight();
+								maxWidth = Math.max(maxWidth, right);
+								maxHeight = Math.max(maxHeight, bottom);
+								measureNode(child as typeof element, childX, childY);
+							}
+						}
+					};
+
+					measureNode(element, 0, 0);
+
+					return {width: maxWidth, height: maxHeight};
+				};
+
+				const getMaxScroll = () => {
+					const {yogaNode} = element;
+					if (!yogaNode) {
+						return {x: 0, y: 0};
 					}
 
-					let parent = element.parentNode;
-					while (parent && 'yogaNode' in parent && parent.yogaNode) {
-						x += parent.yogaNode.getComputedLeft();
-						y += parent.yogaNode.getComputedTop();
-						parent = parent.parentNode;
-					}
-
-					return {x, y, width, height};
-				},
-				getPaintOrder() {
-					let root: DOMElement = element;
-					while (root.parentNode) {
-						root = root.parentNode;
-					}
-
-					if (
-						element.internal_paintEpoch === undefined ||
-						element.internal_paintIndex === undefined ||
-						element.internal_paintEpoch !== root.internal_paintEpoch
-					) {
-						return undefined;
-					}
+					const containerWidth =
+						yogaNode.getComputedWidth() -
+						yogaNode.getComputedBorder(Yoga.EDGE_LEFT) -
+						yogaNode.getComputedBorder(Yoga.EDGE_RIGHT);
+					const containerHeight =
+						yogaNode.getComputedHeight() -
+						yogaNode.getComputedBorder(Yoga.EDGE_TOP) -
+						yogaNode.getComputedBorder(Yoga.EDGE_BOTTOM);
+					const content = getContentDimensions();
 
 					return {
-						epoch: element.internal_paintEpoch,
-						index: element.internal_paintIndex,
+						x: Math.max(0, content.width - containerWidth),
+						y: Math.max(0, content.height - containerHeight),
 					};
-				},
+				};
+
+				return Object.assign(element, {
+					scrollTo({x, y}: {x?: number; y?: number}) {
+						const maxScroll = getMaxScroll();
+
+						if (x !== undefined) {
+							scrollStateRef.current.x = Math.max(0, Math.min(x, maxScroll.x));
+						}
+
+						if (y !== undefined) {
+							scrollStateRef.current.y = Math.max(0, Math.min(y, maxScroll.y));
+						}
+
+						element.internal_scrollOffset = {...scrollStateRef.current};
+						setScrollVersion(version => version + 1);
+					},
+					getScrollPosition() {
+						return {...scrollStateRef.current};
+					},
+					scrollToTop() {
+						scrollStateRef.current.y = 0;
+						element.internal_scrollOffset = {...scrollStateRef.current};
+						setScrollVersion(version => version + 1);
+					},
+					scrollToBottom() {
+						const maxScroll = getMaxScroll();
+						scrollStateRef.current.y = maxScroll.y;
+						element.internal_scrollOffset = {...scrollStateRef.current};
+						setScrollVersion(version => version + 1);
+					},
+					getBounds() {
+						const {yogaNode} = element;
+						if (!yogaNode) {
+							return {x: 0, y: 0, width: 0, height: 0};
+						}
+
+						let x = yogaNode.getComputedLeft();
+						let y = yogaNode.getComputedTop();
+						const width = yogaNode.getComputedWidth();
+						const height = yogaNode.getComputedHeight();
+
+						// A pinned `position: "sticky"` node is drawn away from its
+						// natural-flow position by `renderStickyNode`, which records the
+						// drawn rect on the element. Prefer it so hit-testing lands on the
+						// pinned copy. The live `position === 'sticky'` guard ensures a node
+						// that has since stopped being sticky never reads a stale rect.
+						const stickyRect = element.internal_stickyRect;
+						if (element.style.position === 'sticky' && stickyRect) {
+							return {x: stickyRect.x, y: stickyRect.y, width, height};
+						}
+
+						let parent = element.parentNode;
+						while (parent && 'yogaNode' in parent && parent.yogaNode) {
+							x += parent.yogaNode.getComputedLeft();
+							y += parent.yogaNode.getComputedTop();
+							parent = parent.parentNode;
+						}
+
+						return {x, y, width, height};
+					},
+					getPaintOrder() {
+						let root: DOMElement = element;
+						while (root.parentNode) {
+							root = root.parentNode;
+						}
+
+						if (
+							element.internal_paintEpoch === undefined ||
+							element.internal_paintIndex === undefined ||
+							element.internal_paintEpoch !== root.internal_paintEpoch
+						) {
+							return undefined;
+						}
+
+						return {
+							epoch: element.internal_paintEpoch,
+							index: element.internal_paintIndex,
+						};
+					},
+				});
+			}, []);
+
+			const isScrollContainer =
+				style.overflow === 'scroll' ||
+				style.overflowX === 'scroll' ||
+				style.overflowY === 'scroll';
+
+			useLayoutEffect(() => {
+				if (internalRef.current && isScrollContainer) {
+					internalRef.current.internal_scrollOffset = scrollStateRef.current;
+				}
 			});
-		}, []);
 
-		const isScrollContainer =
-			style.overflow === 'scroll' ||
-			style.overflowX === 'scroll' ||
-			style.overflowY === 'scroll';
-
-		useLayoutEffect(() => {
-			if (internalRef.current && isScrollContainer) {
-				internalRef.current.internal_scrollOffset = scrollStateRef.current;
+			const {isScreenReaderEnabled} = useContext(accessibilityContext);
+			const label = ariaLabel ? <ink-text>{ariaLabel}</ink-text> : undefined;
+			if (isScreenReaderEnabled && ariaHidden) {
+				return null;
 			}
-		});
 
-		const {isScreenReaderEnabled} = useContext(accessibilityContext);
-		const label = ariaLabel ? <ink-text>{ariaLabel}</ink-text> : undefined;
-		if (isScreenReaderEnabled && ariaHidden) {
-			return null;
-		}
-
-		const boxElement = (
-			<ink-box
-				ref={internalRef}
-				style={{
-					flexWrap: 'nowrap',
-					flexDirection: 'row',
-					flexGrow: 0,
-					flexShrink: 1,
-					...style,
-					backgroundColor,
-					overflowX: style.overflowX ?? style.overflow ?? 'visible',
-					overflowY: style.overflowY ?? style.overflow ?? 'visible',
-				}}
-				internal_accessibility={{
-					role,
-					state: ariaState,
-				}}
-				internal_scrollVersion={isScrollContainer ? scrollVersion : undefined}
-			>
-				{isScreenReaderEnabled && label ? label : children}
-			</ink-box>
-		);
-
-		// If this Box has a background color, provide it to children via context
-		if (backgroundColor) {
-			return (
-				<backgroundContext.Provider value={backgroundColor}>
-					{boxElement}
-				</backgroundContext.Provider>
+			const boxElement = (
+				<ink-box
+					ref={internalRef}
+					internal_viewportCulling={viewportCulling || undefined}
+					style={{
+						flexWrap: 'nowrap',
+						flexDirection: 'row',
+						flexGrow: 0,
+						flexShrink: 1,
+						...style,
+						backgroundColor,
+						overflowX: style.overflowX ?? style.overflow ?? 'visible',
+						overflowY: style.overflowY ?? style.overflow ?? 'visible',
+					}}
+					internal_accessibility={{
+						role,
+						state: ariaState,
+					}}
+					internal_scrollVersion={isScrollContainer ? scrollVersion : undefined}
+				>
+					{isScreenReaderEnabled && label ? label : children}
+				</ink-box>
 			);
-		}
 
-		return boxElement;
-	},
-);
+			// If this Box has a background color, provide it to children via context
+			if (backgroundColor) {
+				return (
+					<backgroundContext.Provider value={backgroundColor}>
+						{boxElement}
+					</backgroundContext.Provider>
+				);
+			}
 
-Box.displayName = 'Box';
+			return boxElement;
+		},
+	);
 
+	Component.displayName = displayName;
+	return Component;
+};
+
+const Box = createBoxComponent('Box', false);
 export default Box;
