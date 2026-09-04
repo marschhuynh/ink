@@ -31,6 +31,7 @@ children have no Yoga geometry.
   wrapping, percentages, absolute positioning, nested overflow, z-index, and sticky nodes.
 - Make an imperative scroll a paint-only invalidation: no React reconciliation and no Yoga
   layout when content and terminal geometry are unchanged.
+- Skip Yoga calculation after React commits whose host changes leave the Yoga root clean.
 - Cull fully off-screen subtrees before expensive renderer traversal.
 - Cache content extents and culling metadata per layout generation.
 - Preserve pointer targeting, text selection, accessibility, and incremental rendering.
@@ -70,14 +71,16 @@ React and Yoga nodes and therefore requires an explicit item/measurement contrac
 | Ref | `VLBoxRef` is a type alias of `BoxRef` |
 | Layout model | Retain all children in React and Yoga |
 | Scroll invalidation | Direct host offset mutation + root throttled paint invalidation |
-| Layout cache lifetime | Root `layoutEpoch`, incremented after every Yoga calculation |
-| Culling unit | Complete host subtree |
+| Layout execution | Call Yoga only when terminal width changes or the Yoga root is dirty |
+| Layout cache lifetime | Root `layoutEpoch` plus targeted dirty rebuilds for metadata-sensitive Yoga-clean host changes |
+| Culling unit | Complete host subtree plus visible-row clipping for straddling surfaces |
 | Bounds | Cached subtree paint bounds, including absolute and overflow-visible descendants |
 | Sticky handling | Per-scroll-container indexed sticky candidates; sticky subtrees remain cullable |
+| Transform classification | Ink `Text` styling is geometry-preserving; public `Transform` is unbounded and fails open |
 | Uncertain geometry | Fail open and traverse normally |
 | Screen readers | Render complete semantic tree; culling disabled |
 | Input/scrollbar ownership | Existing higher-level controllers such as CLI `ScrollBox` |
-| First integration | Replace CLI `ScrollBox`'s internal scrolling viewport with `VLBox` |
+| First integration | `ScrollBox` uses `VLBox`, immediate imperative offset updates, and a fixed-geometry scrollbar |
 | Ink release | Publish `@nuvin/ink@7.6.0-alpha`, then update outer pins |
 
 ## 6. Public API
@@ -131,10 +134,12 @@ public style and not a DOM attribute exposed to application code.
 
 ### 7.2 Root layout generation
 
-The Ink root stores a monotonically increasing `layoutEpoch`. `calculateLayout()` increments
-it after Yoga computes layout. Terminal resize and React commits therefore invalidate all
-geometry derived from the previous layout. Paint-only scroll invalidation does not increment
-it.
+The Ink root stores a monotonically increasing `layoutEpoch`. Before calling Yoga, the root
+updates terminal width and checks whether width changed or `yogaNode.isDirty()` is true. Only
+then does it call `calculateLayout()` and increment the epoch. A React commit that changes only
+paint metadata or fixed-geometry scrollbar styling therefore repaints without invalidating
+layout metadata. Terminal resize and layout-affecting host changes still calculate Yoga and
+increment the epoch. Paint-only scroll invalidation does neither.
 
 ### 7.3 Cached host metadata
 
@@ -161,10 +166,16 @@ type ScrollViewportMetadata = {
 ```
 
 When the root contains a `VLBox`, the renderer runs one metadata prepass over each culling
-viewport subtree before output traversal for a new layout epoch. The prepass computes subtree
-bounds, content extents, and sticky indexes. It is O(total retained tree size) once per real
-layout; output traversal can then cull safely in that same frame, and warm scroll paints reuse
-the metadata. Roots without `VLBox` skip the prepass.
+viewport subtree before output traversal for a new layout epoch. The reconciler also marks the
+metadata dirty when a Yoga-clean host update changes culling semantics or indexed paint order:
+`zIndex`, `position` transitions involving sticky, resolved overflow mode, or the
+public-Transform geometry marker. Such a commit rebuilds metadata without
+calling Yoga. Paint-only color/transformer updates and imperative scroll do not mark it dirty.
+
+The prepass computes subtree bounds, content extents, and sticky indexes. It is O(total retained
+tree size) once per real layout or targeted metadata invalidation; output traversal can then
+cull safely in that same frame, and warm scroll paints reuse the metadata. Roots without
+`VLBox` skip the prepass.
 
 ## 8. Bounds and culling algorithm
 
@@ -179,9 +190,11 @@ Bounds are expressed in the owning node's unscrolled layout coordinate space. Th
 At an `overflow: hidden` or `overflow: scroll` descendant, escaped descendant bounds are
 intersected with that descendant's clip. Display-none nodes contribute nothing.
 
-A subtree whose output transformer may change paint geometry is marked
-`hasUnboundedTransform`. It is traversed normally rather than culled from inferred bounds.
-Correctness wins over optimization.
+Ink `Text` always installs an internal transformer for ANSI styling; that transformer does
+not change measured geometry and must not disable culling. The public `Transform` component
+can change output geometry and marks its host text as unbounded. A subtree containing an
+unbounded transform is traversed normally rather than culled from inferred bounds. Correctness
+wins over optimization.
 
 ### 8.2 Active viewport
 
@@ -200,7 +213,10 @@ Before normal rendering of a child subtree:
    width, wrapping, painting surfaces, sorting descendants, or recursively walking children.
 4. If metadata is absent, stale, or uncertain, traverse normally and refresh metadata.
 
-Visible children retain the existing per-parent z-index sort and paint order.
+Visible children retain the existing per-parent z-index sort and paint order. A tall Box that
+straddles the viewport is not rejected as a whole, so `renderBackground` and `renderBorder`
+receive the active visible rectangle and generate only intersecting rows/columns. This avoids
+O(total height) surface work while preserving the existing Output clip guard.
 
 ## 9. Sticky candidate indexing
 
@@ -211,8 +227,9 @@ scroll container:
 ```ts
 type StickyCandidate = {
   node: DOMElement;
-  normalOffset: {x: number; y: number};
+  parentOffset: {x: number; y: number};
   parentBounds: {top: number; bottom: number};
+  parentIsViewport: boolean;
   transformers: OutputTransformer[];
   paintOrder: number;
 };
@@ -224,22 +241,31 @@ Rules:
 - Register a sticky node with its nearest scroll-container ancestor.
 - Entering a nested scroll container transfers ownership of nested candidates to that
   container; an outer viewport does not also register them.
-- Cache the sticky node's natural offset, immediate parent bounds, inherited transformer
-  chain, and DFS paint order relative to the owning viewport's content origin.
+- Cache the sticky node's parent offset, immediate parent bounds, whether that parent is the
+  owning viewport itself, inherited transformer chain, and DFS paint order in the owning
+  viewport's unscrolled border-box-local coordinate space. Yoga child offsets already include
+  border/padding placement. This matches the existing `StickyNodeInfo`: `renderStickyNode`
+  adds the sticky node's own Yoga left/top.
 - Invalidate the complete index on a new layout epoch.
 
 After visible normal content is painted, the scroll container processes its sticky index:
 
-1. Apply the live scroll offset to the cached natural position.
-2. Run the existing sticky clamp against viewport and parent bounds.
-3. Paint visible candidates in the same order as current traversal.
-4. Refresh `internal_stickyRect` and current paint-epoch metadata.
-5. Clear or invalidate stale sticky rectangles for candidates not visible this frame.
+1. Build the sticky node's normal parent position by adding the cached parent offset to the
+   live viewport origin and subtracting the live scroll offset.
+2. For nested content parents, translate cached parent bounds by the same live origin and
+   scroll offset. When the immediate parent is the viewport itself, use the viewport's live
+   unscrolled container bounds, matching current traversal-time sticky behavior.
+3. Pass those screen-space values to the existing sticky clamp exactly once.
+4. Paint visible candidates in the same order as current traversal.
+5. Refresh `internal_stickyRect` and current paint-epoch metadata.
+6. Clear or invalidate stale sticky rectangles for candidates not visible this frame.
 
-This replaces traversal-time sticky discovery only for `VLBox`. Entering a nested normal
-`Box` scroll container stops registration with the outer `VLBox`; the nested container keeps
-current traversal-time discovery. Its own clip prevents its sticky descendants from escaping
-into the outer viewport.
+This replaces traversal-time sticky discovery only for `VLBox`. A nested normal `Box` scroll
+container can be rejected as one complete subtree against the outer active viewport. Once that
+container is visible and entered, ancestor culling is suspended for its descendants so the
+nested container keeps current traversal-time sticky discovery, including naturally off-screen
+sticky nodes. Its own clip prevents those descendants from escaping into the outer viewport.
+A VLBox nested inside it establishes a new active culling viewport and indexed owner.
 
 ## 10. Paint-only scrolling
 
@@ -284,15 +310,23 @@ does today. `aria-hidden` behavior remains owned by the shared Box implementatio
 
 ## 12. CLI integration
 
-`packages/cli/src/components/ComboBox/ScrollBox.tsx` keeps its public API and controller
-logic. Only its internal scrolling viewport changes from `Box` to `VLBox`.
+`packages/cli/src/components/ComboBox/ScrollBox.tsx` keeps its public API and interaction
+semantics. Its internal scrolling viewport changes from `Box` to `VLBox`. Wheel, keyboard,
+and scrollbar-drag handlers update the VLBox offset imperatively before synchronizing
+controller state. Follow-end content growth applies the new maximum offset before committing
+its measured metrics. Controlled prop synchronization retains the existing layout effect.
+Consequently, interactive scrolling does not wait for a React commit or layout effect.
 
-The following remain unchanged:
+The scrollbar keeps a fixed row count and one glyph node per track row while viewport height is
+stable. Thumb movement changes only output styling, leaving Yoga clean; Ink's dirty-root guard
+skips layout for that controller commit. VLBox suppresses repaint requests when an imperative
+offset is unchanged, including the subsequent synchronization effect.
 
-- wheel and keyboard handling;
-- focus registration and capture behavior;
-- follow-end and manual-scroll state;
-- scrollbar rendering and drag behavior;
+The following public behavior remains unchanged:
+
+- focus registration and keyboard/wheel capture;
+- follow-end and manual-scroll semantics;
+- scrollbar appearance and dragging;
 - viewport refs and selection bounds;
 - `onScrollInfo` callbacks;
 - content formatting and component trees.
@@ -322,15 +356,17 @@ Add focused tests for:
 2. Absolute and overflow-visible descendants that paint outside a parent's own box.
 3. Nested hidden/scroll clips and nested `VLBox` offsets.
 4. Imperative scroll does not invoke another Yoga `calculateLayout()`.
-5. Repeated scroll reuses content extents instead of recursively measuring the tree.
-6. Fully off-screen subtrees are absent from the current paint epoch; newly visible subtrees
+5. Paint-only React commits with a clean Yoga root also skip `calculateLayout()`.
+6. Repeated scroll reuses content extents instead of recursively measuring the tree.
+7. Fully off-screen subtrees are absent from the current paint epoch; newly visible subtrees
    receive the current epoch after scrolling.
-7. Sticky candidates remain pinned, ordered, and pointer-addressable while natural parent
+8. Straddling backgrounds and borders generate only viewport-intersecting rows and columns.
+9. Sticky candidates remain pinned, ordered, and pointer-addressable while natural parent
    subtrees are culled.
-8. Content growth, content shrink, and terminal resize invalidate metadata and clamp offsets.
-9. Text selection output is byte-identical to the unculled reference path.
-10. Screen-reader output contains the full tree regardless of scroll position.
-11. Invalid offsets and uncertain transformed geometry take their documented safe paths.
+10. Content growth, content shrink, and terminal resize invalidate metadata and clamp offsets.
+11. Text selection output is byte-identical to the unculled reference path.
+12. Screen-reader output contains the full tree regardless of scroll position.
+13. Invalid offsets and uncertain transformed geometry take their documented safe paths.
 
 ### 14.2 CLI tests
 
@@ -350,7 +386,8 @@ pnpm/vitest toolchain against the built Ink artifact selected for development.
 
 Add or extend a warm-scroll benchmark with a large mixed tree containing nested boxes, plain
 text, Markdown-like per-line Text nodes, absolute children, nested clips, and sticky headers.
-Measure after initial layout.
+Run performance gates at a terminal size of **424 columns × 95 rows** and measure after initial
+layout.
 
 Required gates:
 
