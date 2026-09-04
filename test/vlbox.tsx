@@ -388,3 +388,361 @@ test('VLBox fail-opens metadata for Transform nested under Text virtual-text', a
 	t.true(viewport.internal_layoutMetadata?.hasUnboundedTransform);
 	instance.unmount();
 });
+
+test('VLBox culls off-screen subtrees before renderer traversal', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const rowRefs = Array.from({length: 20}, () => React.createRef<BoxRef>());
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={10}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{Array.from({length: 20}, (_, index) => (
+				<Box key={index} ref={rowRefs[index]} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	const visibleOrder = rowRefs[1]?.current?.getPaintOrder();
+	const hiddenOrder = rowRefs[15]?.current?.getPaintOrder();
+	t.truthy(visibleOrder);
+	t.is(hiddenOrder, undefined);
+	t.true(
+		(rootOf(viewportRef.current!).internal_lastRenderVisitCount ?? 999) < 15,
+	);
+
+	viewportRef.current?.scrollTo({y: 14});
+	await instance.waitUntilRenderFlush();
+
+	t.truthy(rowRefs[15]?.current?.getPaintOrder());
+	t.is(rowRefs[1]?.current?.getPaintOrder(), undefined);
+	t.true(
+		(rootOf(viewportRef.current!).internal_lastRenderVisitCount ?? 999) < 15,
+	);
+	instance.unmount();
+});
+
+test('VLBox matches Box output for arbitrary retained layout', t => {
+	const cases: Array<{
+		name: string;
+		props: React.ComponentProps<typeof Box>;
+		children: React.ReactNode;
+	}> = [
+		{
+			name: 'column flex',
+			props: {width: 12, height: 4, flexDirection: 'column', gap: 1},
+			children: (
+				<>
+					<Text>one</Text>
+					<Text>two</Text>
+				</>
+			),
+		},
+		{
+			name: 'row reverse with grow',
+			props: {
+				width: 20,
+				height: 2,
+				flexDirection: 'row-reverse',
+				gap: 1,
+			},
+			children: (
+				<>
+					<Box flexGrow={1}>
+						<Text>A</Text>
+					</Box>
+					<Box flexShrink={0} width={4}>
+						<Text>B</Text>
+					</Box>
+				</>
+			),
+		},
+		{
+			name: 'percentage width padding border background',
+			props: {
+				width: 20,
+				height: 4,
+				padding: 1,
+				borderStyle: 'single',
+				backgroundColor: 'blue',
+			},
+			children: (
+				<Box width="50%">
+					<Text>half</Text>
+				</Box>
+			),
+		},
+		{
+			name: 'absolute descendant outside parent box',
+			props: {width: 10, height: 3, borderStyle: 'single'},
+			children: (
+				<>
+					<Box position="absolute" left={12} top={1} width={4} height={1}>
+						<Text>out</Text>
+					</Box>
+					<Text>in</Text>
+				</>
+			),
+		},
+		{
+			name: 'nested overflow hidden',
+			props: {
+				width: 8,
+				height: 3,
+				overflow: 'hidden',
+				flexDirection: 'column',
+			},
+			children: (
+				<Box width={20} height={5} flexShrink={0}>
+					<Text>clipped-content</Text>
+				</Box>
+			),
+		},
+		{
+			name: 'nested overflow scroll',
+			props: {
+				width: 10,
+				height: 3,
+				overflow: 'scroll',
+				flexDirection: 'column',
+			},
+			children: Array.from({length: 6}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>r{index}</Text>
+				</Box>
+			)),
+		},
+		{
+			name: 'z-index overlap',
+			props: {width: 5, height: 1},
+			children: (
+				<>
+					<Box position="absolute" left={0} top={0} zIndex={1}>
+						<Text>LO</Text>
+					</Box>
+					<Box position="absolute" left={0} top={0} zIndex={5}>
+						<Text>HI</Text>
+					</Box>
+				</>
+			),
+		},
+	];
+
+	for (const testCase of cases) {
+		const boxOutput = renderToString(
+			<Box {...testCase.props}>{testCase.children}</Box>,
+			{columns: 40},
+		);
+		const vlBoxOutput = renderToString(
+			<VLBox {...testCase.props}>{testCase.children}</VLBox>,
+			{columns: 40},
+		);
+		t.is(vlBoxOutput, boxOutput, `${testCase.name}`);
+	}
+});
+
+test('VLBox fails open for geometry-changing Transform', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const offscreenRef = React.createRef<BoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={20}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{Array.from({length: 3}, (_, index) => (
+				<Box key={`v-${index}`} flexShrink={0}>
+					<Text>visible {index}</Text>
+				</Box>
+			))}
+			{Array.from({length: 10}, (_, index) => (
+				<Box
+					key={`h-${index}`}
+					ref={index === 5 ? offscreenRef : undefined}
+					flexShrink={0}
+				>
+					{index === 5 ? (
+						<Transform transform={value => value}>
+							<Text>transform-row</Text>
+						</Transform>
+					) : (
+						<Text>hidden {index}</Text>
+					)}
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	// Off-screen Transform-bearing parent remains painted/current-epoch (fail-open).
+	t.truthy(offscreenRef.current?.getPaintOrder());
+	t.true(
+		offscreenRef.current?.internal_layoutMetadata?.hasUnboundedTransform ===
+			true,
+	);
+	instance.unmount();
+});
+
+test('VLBox fails open before viewport layout is valid', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const childRef = React.createRef<BoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={0}
+			height={0}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box ref={childRef} width={4} height={1} flexShrink={0}>
+				<Text>kid</Text>
+			</Box>
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	// Zero-sized VLBox must not establish a culling viewport, so descendants stay
+	// on the normal traversal path and receive a current paint order.
+	t.truthy(childRef.current?.getPaintOrder());
+	instance.unmount();
+});
+
+test('VLBox culls only axes resolved to overflow scroll', async t => {
+	const stdout = createStdout(80);
+	const hiddenOnlyRef = React.createRef<VLBoxRef>();
+	const hiddenChildRef = React.createRef<BoxRef>();
+	const verticalScrollRef = React.createRef<VLBoxRef>();
+	const verticalOffRef = React.createRef<BoxRef>();
+	const horizontalOffRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<Box flexDirection="column" width={40}>
+			<VLBox
+				ref={hiddenOnlyRef}
+				width={10}
+				height={3}
+				overflow="hidden"
+				flexDirection="column"
+			>
+				{Array.from({length: 10}, (_, index) => (
+					<Box
+						key={index}
+						ref={index === 8 ? hiddenChildRef : undefined}
+						flexShrink={0}
+					>
+						<Text>h{index}</Text>
+					</Box>
+				))}
+			</VLBox>
+			<VLBox
+				ref={verticalScrollRef}
+				width={10}
+				height={3}
+				overflowY="scroll"
+				flexDirection="column"
+			>
+				{Array.from({length: 10}, (_, index) => (
+					<Box
+						key={`v-${index}`}
+						ref={index === 8 ? verticalOffRef : undefined}
+						flexShrink={0}
+					>
+						<Text>v{index}</Text>
+					</Box>
+				))}
+				<Box
+					ref={horizontalOffRef}
+					position="absolute"
+					left={40}
+					top={0}
+					width={4}
+					height={1}
+				>
+					<Text>xoff</Text>
+				</Box>
+			</VLBox>
+		</Box>,
+		{stdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+
+	// Overflow="hidden" only does not activate culling — off-screen child still visited.
+	t.truthy(hiddenChildRef.current?.getPaintOrder());
+	// OverflowY="scroll" culls vertically disjoint children.
+	t.is(verticalOffRef.current?.getPaintOrder(), undefined);
+	// But still traverses horizontally disjoint children (X axis not scroll).
+	t.truthy(horizontalOffRef.current?.getPaintOrder());
+	instance.unmount();
+});
+
+test('VLBox clips straddling background and border generation to visible rows and columns', async t => {
+	const stdout = createStdout(40);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const surfaceRef = React.createRef<BoxRef>();
+	const boxStdout = createStdout(40);
+	const boxSurfaceRef = React.createRef<BoxRef>();
+
+	const surface = (ref: typeof surfaceRef) => (
+		<Box
+			ref={ref}
+			width={500}
+			height={500}
+			borderStyle="single"
+			backgroundColor="red"
+			flexShrink={0}
+		>
+			<Text>x</Text>
+		</Box>
+	);
+
+	const vlInstance = render(
+		<VLBox
+			ref={viewportRef}
+			width={12}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			{surface(surfaceRef)}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	const boxInstance = render(
+		<Box width={12} height={3} overflow="scroll" flexDirection="column">
+			{surface(boxSurfaceRef)}
+		</Box>,
+		{stdout: boxStdout, debug: true},
+	);
+	await waitForWriteCount(stdout, 1);
+	await waitForWriteCount(boxStdout, 1);
+
+	const writeCount = surfaceRef.current?.internal_lastSurfaceWriteCount ?? 999;
+	const cellCount =
+		surfaceRef.current?.internal_lastSurfaceCellCount ?? 999_999;
+	// Visible region is 3 rows x 12 cols. Background rows + border edges must not
+	// scale with the 500x500 off-screen surface.
+	t.true(writeCount < 40, `writes ${writeCount} should be viewport-bounded`);
+	t.true(
+		cellCount < 12 * 3 * 4,
+		`cells ${cellCount} should be viewport-bounded`,
+	);
+
+	// Byte-identical to the normal clipped Box path.
+	t.is(stdout.get(), boxStdout.get());
+	vlInstance.unmount();
+	boxInstance.unmount();
+});

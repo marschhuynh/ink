@@ -8,6 +8,11 @@ import renderBorder from './render-border.js';
 import renderBackground from './render-background.js';
 import {type DOMElement} from './dom.js';
 import type Output from './output.js';
+import {
+	type CullingViewport,
+	getChildCullingViewport,
+	shouldCullNode,
+} from './layout-metadata.js';
 
 // If parent container is `<Box>`, text nodes will be treated as separate nodes in
 // the tree and will have their own coordinates in the layout.
@@ -64,6 +69,7 @@ type BoundsInfo = {
 export type PaintState = {
 	epoch: number;
 	nextIndex: number;
+	visitedCount: number;
 };
 
 type RenderContext = {
@@ -294,6 +300,7 @@ const renderNodeToOutput = (
 		parentTop?: number;
 		parentBottom?: number;
 		paintState: PaintState;
+		cullingViewport?: CullingViewport;
 	},
 ) => {
 	const {
@@ -305,6 +312,7 @@ const renderNodeToOutput = (
 		parentTop = -Infinity,
 		parentBottom = Infinity,
 		paintState,
+		cullingViewport,
 	} = options;
 
 	if (skipStaticElements && node.internal_static) {
@@ -322,6 +330,13 @@ const renderNodeToOutput = (
 		const x = offsetX + yogaNode.getComputedLeft();
 		const y = offsetY + yogaNode.getComputedTop();
 		const nodeHeight = yogaNode.getComputedHeight();
+
+		if (shouldCullNode(node, x, y, cullingViewport)) {
+			return;
+		}
+
+		// Count only nodes accepted for expensive traversal after culling.
+		paintState.visitedCount++;
 
 		// Transformers are functions that transform final text output of each component
 		// See Output class for logic that applies transformers
@@ -372,8 +387,23 @@ const renderNodeToOutput = (
 		let clipped = false;
 
 		if (node.nodeName === 'ink-box') {
-			renderBackground(x, y, node, output);
-			renderBorder(x, y, node, output);
+			const surfaceVisibleRect = cullingViewport
+				? {
+						left: cullingViewport.clipX ? cullingViewport.rect.left : -Infinity,
+						top: cullingViewport.clipY ? cullingViewport.rect.top : -Infinity,
+						right: cullingViewport.clipX
+							? cullingViewport.rect.right
+							: Infinity,
+						bottom: cullingViewport.clipY
+							? cullingViewport.rect.bottom
+							: Infinity,
+					}
+				: undefined;
+
+			node.internal_lastSurfaceWriteCount = 0;
+			node.internal_lastSurfaceCellCount = 0;
+			renderBackground(x, y, node, output, surfaceVisibleRect);
+			renderBorder(x, y, node, output, surfaceVisibleRect);
 
 			const clipHorizontally =
 				node.style.overflowX === 'hidden' ||
@@ -443,6 +473,13 @@ const renderNodeToOutput = (
 				return aZ - bZ;
 			});
 
+			const childCullingViewport = getChildCullingViewport(
+				node,
+				x,
+				y,
+				cullingViewport,
+			);
+
 			for (const childNode of sortedChildren) {
 				renderNodeToOutput(childNode as DOMElement, output, {
 					offsetX: x - scrollOffset.x,
@@ -453,6 +490,7 @@ const renderNodeToOutput = (
 					parentTop: childParentTop,
 					parentBottom: childParentBottom,
 					paintState,
+					cullingViewport: childCullingViewport,
 				});
 			}
 

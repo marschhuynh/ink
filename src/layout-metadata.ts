@@ -173,3 +173,100 @@ export const getScrollViewportMetadata = (
 		? metadata
 		: undefined;
 };
+
+export type CullingViewport = {
+	rect: Rect;
+	clipX: boolean;
+	clipY: boolean;
+};
+
+export const intersectsViewport = (
+	bounds: Rect,
+	viewport: CullingViewport,
+): boolean => {
+	const xVisible =
+		!viewport.clipX ||
+		(bounds.right > viewport.rect.left && bounds.left < viewport.rect.right);
+	const yVisible =
+		!viewport.clipY ||
+		(bounds.bottom > viewport.rect.top && bounds.top < viewport.rect.bottom);
+	return xVisible && yVisible;
+};
+
+export const shouldCullNode = (
+	node: DOMElement,
+	nodeX: number,
+	nodeY: number,
+	viewport: CullingViewport | undefined,
+): boolean => {
+	if (!viewport) return false;
+	const metadata = getNodeLayoutMetadata(node);
+	if (!metadata || metadata.hasUnboundedTransform) return false;
+	const bounds = translate(metadata.subtreePaintBounds, nodeX, nodeY);
+	return !intersectsViewport(bounds, viewport);
+};
+
+export const getChildCullingViewport = (
+	node: DOMElement,
+	nodeX: number,
+	nodeY: number,
+	inherited: CullingViewport | undefined,
+): CullingViewport | undefined => {
+	const yoga = node.yogaNode;
+	if (!yoga) return inherited;
+	const isScrollContainer =
+		node.style.overflowX === 'scroll' || node.style.overflowY === 'scroll';
+	if (isScrollContainer && !node.internal_viewportCulling) return undefined;
+	if (!node.internal_viewportCulling) return inherited;
+
+	const ownClipX = node.style.overflowX === 'scroll';
+	const ownClipY = node.style.overflowY === 'scroll';
+	if (!ownClipX && !ownClipY) return inherited;
+	const own = {
+		left: nodeX + yoga.getComputedBorder(Yoga.EDGE_LEFT),
+		top: nodeY + yoga.getComputedBorder(Yoga.EDGE_TOP),
+		right:
+			nodeX + yoga.getComputedWidth() - yoga.getComputedBorder(Yoga.EDGE_RIGHT),
+		bottom:
+			nodeY +
+			yoga.getComputedHeight() -
+			yoga.getComputedBorder(Yoga.EDGE_BOTTOM),
+	};
+	if (
+		(ownClipX && !(own.right > own.left)) ||
+		(ownClipY && !(own.bottom > own.top))
+	) {
+		return inherited;
+	}
+
+	return {
+		rect: {
+			left:
+				ownClipX && inherited?.clipX
+					? Math.max(own.left, inherited.rect.left)
+					: ownClipX
+						? own.left
+						: (inherited?.rect.left ?? own.left),
+			right:
+				ownClipX && inherited?.clipX
+					? Math.min(own.right, inherited.rect.right)
+					: ownClipX
+						? own.right
+						: (inherited?.rect.right ?? own.right),
+			top:
+				ownClipY && inherited?.clipY
+					? Math.max(own.top, inherited.rect.top)
+					: ownClipY
+						? own.top
+						: (inherited?.rect.top ?? own.top),
+			bottom:
+				ownClipY && inherited?.clipY
+					? Math.min(own.bottom, inherited.rect.bottom)
+					: ownClipY
+						? own.bottom
+						: (inherited?.rect.bottom ?? own.bottom),
+		},
+		clipX: ownClipX || inherited?.clipX === true,
+		clipY: ownClipY || inherited?.clipY === true,
+	};
+};
