@@ -1007,3 +1007,84 @@ test('VLBox rejects a wholly horizontally off-screen indexed sticky root', async
 	t.is(stickyRef.current?.internal_lastSurfaceCellCount, undefined);
 	t.is(childRef.current?.getPaintOrder(), undefined);
 });
+
+test('sticky getBounds ignores a prior epoch rect when its indexed root is rejected', async t => {
+	const stdout = createStdout(40);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const rootStickyRef = React.createRef<BoxRef>();
+	const nestedStickyRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={12}
+			height={4}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box height={1} flexShrink={0}>
+				<Text>before</Text>
+			</Box>
+			<Box
+				ref={rootStickyRef}
+				position="sticky"
+				top={0}
+				width={6}
+				height={2}
+				flexShrink={0}
+			>
+				<Text>ROOT</Text>
+				<Box
+					ref={nestedStickyRef}
+					position="sticky"
+					top={0}
+					width={6}
+					height={1}
+					borderStyle="single"
+					backgroundColor="red"
+					flexShrink={0}
+				/>
+			</Box>
+			<Box width={40} height={1} flexShrink={0}>
+				<Text>abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN</Text>
+			</Box>
+			{Array.from({length: 2}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>tail {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	viewportRef.current?.scrollTo({x: 0, y: 1});
+	await instance.waitUntilRenderFlush();
+	const visibleBounds = nestedStickyRef.current?.getBounds();
+	const storedVisibleRect = nestedStickyRef.current?.internal_stickyRect;
+	t.truthy(visibleBounds);
+	t.truthy(storedVisibleRect);
+	t.is(
+		rootStickyRef.current?.getBounds().y,
+		viewportRef.current?.getBounds().y,
+	);
+	t.truthy(nestedStickyRef.current?.getPaintOrder());
+
+	nestedStickyRef.current!.internal_lastSurfaceWriteCount = 0;
+	nestedStickyRef.current!.internal_lastSurfaceCellCount = 0;
+	viewportRef.current?.scrollTo({x: 20});
+	await instance.waitUntilRenderFlush();
+
+	const output = stripAnsi(stdout.get());
+	t.false(output.includes('ROOT'));
+	t.true(output.includes('uvwxyzABCDEF'));
+	t.is(rootStickyRef.current?.getPaintOrder(), undefined);
+	t.is(nestedStickyRef.current?.getPaintOrder(), undefined);
+	t.is(nestedStickyRef.current?.internal_lastSurfaceWriteCount, 0);
+	t.is(nestedStickyRef.current?.internal_lastSurfaceCellCount, 0);
+	t.deepEqual(nestedStickyRef.current?.internal_stickyRect, storedVisibleRect);
+	t.notDeepEqual(nestedStickyRef.current?.getBounds(), visibleBounds);
+});
