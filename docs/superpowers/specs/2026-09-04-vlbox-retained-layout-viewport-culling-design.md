@@ -78,7 +78,7 @@ React and Yoga nodes and therefore requires an explicit item/measurement contrac
 | Screen readers | Render complete semantic tree; culling disabled |
 | Input/scrollbar ownership | Existing higher-level controllers such as CLI `ScrollBox` |
 | First integration | Replace CLI `ScrollBox`'s internal scrolling viewport with `VLBox` |
-| Ink release | Publish `@nuvin/ink@7.4.0-alpha.1`, then update outer pins |
+| Ink release | Publish `@nuvin/ink@7.6.0-alpha`, then update outer pins |
 
 ## 6. Public API
 
@@ -374,8 +374,8 @@ normally resolve the published package rather than nested source.
 1. Implement `VLBox`, metadata, culling, sticky indexing, and Ink tests in the nested repo.
 2. Run focused and full relevant AVA tests, typecheck, and build.
 3. Commit the Ink change independently.
-4. Publish `@nuvin/ink@7.4.0-alpha.1` only with explicit user approval.
-5. Update the outer workspace's Ink pins and lockfile to `7.4.0-alpha.1`.
+4. Publish `@nuvin/ink@7.6.0-alpha` only with explicit user approval.
+5. Update the outer workspace's Ink pins and lockfile from the verified current `7.5.0-alpha` to `7.6.0-alpha`.
 6. Replace CLI `ScrollBox`'s viewport with `VLBox`; add integration tests and benchmark.
 7. Return any development-only `ink-local` override to npm mode before outer commits.
 8. Add the required CLI changeset, including `nuvin-code`, and commit outer changes
