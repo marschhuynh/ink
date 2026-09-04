@@ -4,8 +4,10 @@ import delay from 'delay';
 import {
 	Box,
 	type BoxRef,
+	type DOMElement,
 	render,
 	Text,
+	Transform,
 	VLBox,
 	type VLBoxRef,
 } from '../src/index.js';
@@ -33,6 +35,23 @@ const rootOf = (node: NonNullable<BoxRef>): NonNullable<BoxRef> => {
 	let root = node;
 	while (root.parentNode) root = root.parentNode as NonNullable<BoxRef>;
 	return root;
+};
+
+const firstMatchingElement = (
+	node: DOMElement,
+	predicate: (child: DOMElement) => boolean,
+): DOMElement | undefined => {
+	for (const childNode of node.childNodes) {
+		if (childNode.nodeName === '#text') {
+			continue;
+		}
+
+		if (predicate(childNode)) {
+			return childNode;
+		}
+	}
+
+	return undefined;
 };
 
 test('layout epoch advances only when the Yoga root is dirty', async t => {
@@ -315,5 +334,57 @@ test('VLBox rebuilds metadata after a Yoga-clean culling-semantics update', asyn
 	t.is(rootOf(viewportRef.current!).internal_layoutEpoch, layoutEpoch);
 	t.not(viewportRef.current?.internal_scrollViewportMetadata, firstMetadata);
 	t.truthy(viewportRef.current?.internal_scrollViewportMetadata);
+	instance.unmount();
+});
+
+test('VLBox fail-opens metadata for Transform nested under Text virtual-text', async t => {
+	const stdout = createStdout(80);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={20}
+			height={3}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Text>
+				<Text>
+					<Transform transform={value => value}>nested</Transform>
+				</Text>
+			</Text>
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	await instance.waitUntilRenderFlush();
+
+	const viewport = viewportRef.current!;
+	const textHost = firstMatchingElement(
+		viewport,
+		node => node.nodeName === 'ink-text',
+	);
+	t.truthy(textHost?.yogaNode);
+
+	const nestedText = textHost
+		? firstMatchingElement(
+				textHost,
+				node => node.nodeName === 'ink-virtual-text',
+			)
+		: undefined;
+	t.falsy(nestedText?.yogaNode);
+	t.falsy(nestedText?.internal_transformAffectsGeometry);
+
+	const virtualTransform = nestedText
+		? firstMatchingElement(
+				nestedText,
+				node =>
+					node.nodeName === 'ink-virtual-text' &&
+					node.internal_transformAffectsGeometry === true,
+			)
+		: undefined;
+	t.truthy(virtualTransform);
+	t.falsy(virtualTransform?.yogaNode);
+	t.true(textHost?.internal_layoutMetadata?.hasUnboundedTransform);
+	t.true(viewport.internal_layoutMetadata?.hasUnboundedTransform);
 	instance.unmount();
 });
