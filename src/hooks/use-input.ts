@@ -167,8 +167,8 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
 	const handlerRef = useRef(inputHandler);
 	handlerRef.current = inputHandler;
 
-	const exitOnCtrlCRef = useRef(internal_exitOnCtrlC);
-	exitOnCtrlCRef.current = internal_exitOnCtrlC;
+	const exitOnCtrlC = useRef(internal_exitOnCtrlC);
+	exitOnCtrlC.current = internal_exitOnCtrlC;
 
 	useEffect(() => {
 		if (options.isActive === false) {
@@ -256,7 +256,7 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
 			}
 
 			// If app is supposed to exit on Ctrl+C, skip input listeners.
-			if (input === 'c' && key.ctrl && exitOnCtrlCRef.current) {
+			if (input === 'c' && key.ctrl && exitOnCtrlC.current) {
 				return;
 			}
 
