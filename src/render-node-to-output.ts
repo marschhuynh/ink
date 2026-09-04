@@ -10,8 +10,10 @@ import {type DOMElement, type StickyCandidate} from './dom.js';
 import type Output from './output.js';
 import {
 	type CullingViewport,
+	clampViewportScroll,
 	getChildCullingViewport,
 	getScrollViewportMetadata,
+	sameOffset,
 	shouldCullNode,
 } from './layout-metadata.js';
 
@@ -518,6 +520,14 @@ const renderNodeToOutput = (
 				node.style.overflow === 'scroll' ||
 				node.style.overflowX === 'scroll' ||
 				node.style.overflowY === 'scroll';
+			if (node.internal_viewportCulling && getScrollViewportMetadata(node)) {
+				const current = node.internal_scrollOffset ?? {x: 0, y: 0};
+				const clamped = clampViewportScroll(node);
+				if (!sameOffset(current, clamped)) {
+					node.internal_scrollOffset = {...clamped};
+				}
+			}
+
 			const scrollOffset =
 				isScrollContainer && node.internal_scrollOffset
 					? node.internal_scrollOffset
