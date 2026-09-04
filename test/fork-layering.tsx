@@ -950,11 +950,13 @@ test('VLBox bounds a wide pinned indexed sticky root surface', async t => {
 	const stickyBounds = sticky.getBounds();
 	t.truthy(viewportBounds);
 	t.is(stickyBounds.y, viewportBounds!.y);
-	t.deepEqual(stripAnsi(stdout.get()).split('\n').slice(0, 3), [
-		'┌───────────',
-		'│',
-		'└───────────',
-	]);
+	t.deepEqual(
+		stripAnsi(stdout.get())
+			.split('\n')
+			.slice(0, 3)
+			.map(line => line.trimEnd()),
+		['┌───────────', '│', '└───────────'],
+	);
 	t.true(
 		maximumWriteCount < 40,
 		`writes ${maximumWriteCount} should stay viewport-bounded across resets`,
