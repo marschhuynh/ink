@@ -6,7 +6,7 @@ import getMaxWidth from './get-max-width.js';
 import squashTextNodes from './squash-text-nodes.js';
 import renderBorder from './render-border.js';
 import renderBackground from './render-background.js';
-import {type DOMElement, type StickyCandidate} from './dom.js';
+import {type DOMElement, type Rect, type StickyCandidate} from './dom.js';
 import type Output from './output.js';
 import {
 	type CullingViewport,
@@ -88,6 +88,18 @@ type RenderContext = {
 	paintState: PaintState;
 };
 
+const getSurfaceVisibleRect = (
+	cullingViewport: CullingViewport | undefined,
+): Rect | undefined =>
+	cullingViewport
+		? {
+				left: cullingViewport.clipX ? cullingViewport.rect.left : -Infinity,
+				top: cullingViewport.clipY ? cullingViewport.rect.top : -Infinity,
+				right: cullingViewport.clipX ? cullingViewport.rect.right : Infinity,
+				bottom: cullingViewport.clipY ? cullingViewport.rect.bottom : Infinity,
+			}
+		: undefined;
+
 const markPainted = (node: DOMElement, state: PaintState): void => {
 	node.internal_paintEpoch = state.epoch;
 	node.internal_paintIndex = state.nextIndex++;
@@ -167,6 +179,11 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 		return;
 	}
 
+	if (shouldCullNode(node, x, y, cullingViewport)) {
+		node.internal_stickyRect = undefined;
+		return;
+	}
+
 	markPainted(node, paintState);
 
 	let newTransformers = transformers;
@@ -175,8 +192,11 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 	}
 
 	if (node.nodeName === 'ink-box') {
-		renderBackground(x, y, node, output);
-		renderBorder(x, y, node, output);
+		const surfaceVisibleRect = getSurfaceVisibleRect(cullingViewport);
+		node.internal_lastSurfaceWriteCount = 0;
+		node.internal_lastSurfaceCellCount = 0;
+		renderBackground(x, y, node, output, surfaceVisibleRect);
+		renderBorder(x, y, node, output, surfaceVisibleRect);
 	}
 
 	for (const childNode of node.childNodes) {
@@ -481,18 +501,7 @@ const renderNodeToOutput = (
 		let clipped = false;
 
 		if (node.nodeName === 'ink-box') {
-			const surfaceVisibleRect = cullingViewport
-				? {
-						left: cullingViewport.clipX ? cullingViewport.rect.left : -Infinity,
-						top: cullingViewport.clipY ? cullingViewport.rect.top : -Infinity,
-						right: cullingViewport.clipX
-							? cullingViewport.rect.right
-							: Infinity,
-						bottom: cullingViewport.clipY
-							? cullingViewport.rect.bottom
-							: Infinity,
-					}
-				: undefined;
+			const surfaceVisibleRect = getSurfaceVisibleRect(cullingViewport);
 
 			node.internal_lastSurfaceWriteCount = 0;
 			node.internal_lastSurfaceCellCount = 0;
