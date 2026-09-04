@@ -47,6 +47,24 @@ const clipAxes = (
 const isScrollOrHidden = (value: unknown): boolean =>
 	value === 'scroll' || value === 'hidden';
 
+const yogaLessSubtreeHasUnboundedTransform = (node: DOMElement): boolean => {
+	if (node.internal_transformAffectsGeometry === true) {
+		return true;
+	}
+
+	for (const childNode of node.childNodes) {
+		if (childNode.nodeName === '#text' || childNode.yogaNode) {
+			continue;
+		}
+
+		if (yogaLessSubtreeHasUnboundedTransform(childNode)) {
+			return true;
+		}
+	}
+
+	return false;
+};
+
 const buildNode = (
 	node: DOMElement,
 	epoch: number,
@@ -69,8 +87,13 @@ const buildNode = (
 	for (const childNode of node.childNodes) {
 		if (childNode.nodeName === '#text') continue;
 		const child = childNode;
+		if (!child.yogaNode) {
+			hasUnboundedTransform ||= yogaLessSubtreeHasUnboundedTransform(child);
+			continue;
+		}
+
 		const childMetadata = buildNode(child, epoch);
-		if (!childMetadata || !child.yogaNode) continue;
+		if (!childMetadata) continue;
 		const childPaint = translate(
 			childMetadata.subtreePaintBounds,
 			child.yogaNode.getComputedLeft(),
