@@ -129,13 +129,16 @@ test('cache keeps updating while dragging (auto-scroll depends on it)', t => {
 
 test('a transient null viewport after finish does not clear or move the selection', t => {
 	const controller = new TextSelectionController();
-	let viewport: {
-		top: number;
-		left: number;
-		width: number;
-		height: number;
-		scrollY: number;
-	} | null = {top: 0, left: 2, width: 11, height: 1, scrollY: 0};
+	let viewport:
+		| {
+				top: number;
+				left: number;
+				width: number;
+				height: number;
+				scrollY: number;
+		  }
+		// eslint-disable-next-line @typescript-eslint/no-restricted-types
+		| null = {top: 0, left: 2, width: 11, height: 1, scrollY: 0};
 	controller.setViewportProvider(() => viewport);
 
 	// "  hello world" sliced to the viewport [left: 2, width: 11] -> "hello world".

@@ -1275,6 +1275,7 @@ test.serial(
 				resolveNarrowColumns();
 			}
 		};
+
 		const instance = render(<ResizeAwareWidthFrame onColumns={onColumns} />, {
 			stdout,
 			interactive: true,
@@ -1509,7 +1510,7 @@ test.serial(
 		const eraseIndex = writes.findIndex(write =>
 			write.includes(ansiEscapes.eraseLines(4)),
 		);
-		const externalIndex = writes.findIndex(write => write === 'external\n');
+		const externalIndex = writes.indexOf('external\n');
 		t.true(
 			eraseIndex >= 0,
 			writes
