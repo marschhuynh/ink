@@ -1,6 +1,6 @@
 {
 	"name": "@nuvin/ink",
-	"version": "7.5.0-alpha",
+	"version": "7.6.0-alpha",
 	"description": "React for CLI",
 	"license": "MIT",
 	"repository": "marschhuynh/ink",
@@ -27,6 +27,7 @@
 		"typecheck": "tsc --noEmit",
 		"example": "NODE_NO_WARNINGS=1 node --import=tsx",
 		"benchmark": "NODE_NO_WARNINGS=1 node --import=tsx",
+		"benchmark:vlbox": "NODE_NO_WARNINGS=1 node --import=tsx benchmark/vlbox.tsx",
 		"inspect": "react-devtools"
 	},
 	"files": [
