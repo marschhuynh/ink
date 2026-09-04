@@ -189,7 +189,10 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 
 		const childX = x + childYoga.getComputedLeft();
 		const childY = y + childYoga.getComputedTop();
-		if (shouldCullNode(child, childX, childY, cullingViewport)) {
+		if (
+			child.nodeName === 'ink-text' &&
+			shouldCullNode(child, childX, childY, cullingViewport)
+		) {
 			continue;
 		}
 

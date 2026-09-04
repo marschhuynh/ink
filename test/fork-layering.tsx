@@ -820,3 +820,60 @@ test('VLBox clears stale bounds when a nested sticky is culled with its indexed 
 	t.notDeepEqual(nestedStickyRef.current?.getBounds(), visibleBounds);
 	t.is(nestedStickyRef.current?.internal_stickyRect, undefined);
 });
+
+test('VLBox clears stale bounds for a culled direct child of an indexed sticky', async t => {
+	const stdout = createStdout(40);
+	const viewportRef = React.createRef<VLBoxRef>();
+	const nestedStickyRef = React.createRef<BoxRef>();
+
+	const instance = render(
+		<VLBox
+			ref={viewportRef}
+			width={12}
+			height={4}
+			overflow="scroll"
+			flexDirection="column"
+		>
+			<Box height={3} flexDirection="column" flexShrink={0}>
+				<Box height={2} flexShrink={0} />
+				<Box position="sticky" top={0} height={1} flexShrink={0}>
+					<Text>OUTER</Text>
+					<Box
+						ref={nestedStickyRef}
+						position="sticky"
+						top={-1}
+						height={1}
+						flexShrink={0}
+					>
+						<Text>NESTED</Text>
+					</Box>
+				</Box>
+			</Box>
+			{Array.from({length: 5}, (_, index) => (
+				<Box key={index} flexShrink={0}>
+					<Text>row {index}</Text>
+				</Box>
+			))}
+		</VLBox>,
+		{stdout, debug: true},
+	);
+	t.teardown(() => {
+		instance.unmount();
+	});
+	await waitForWriteCount(stdout, 1);
+
+	viewportRef.current?.scrollTo({y: 1});
+	await instance.waitUntilRenderFlush();
+	const visibleBounds = nestedStickyRef.current?.getBounds();
+	t.truthy(visibleBounds);
+	t.is(visibleBounds!.y, viewportRef.current!.getBounds().y);
+	t.truthy(nestedStickyRef.current?.getPaintOrder());
+
+	viewportRef.current?.scrollTo({y: 2});
+	await instance.waitUntilRenderFlush();
+
+	t.true(stripAnsi(stdout.get()).split('\n')[0]?.includes('OUTER'));
+	t.false(stripAnsi(stdout.get()).includes('NESTED'));
+	t.is(nestedStickyRef.current?.getPaintOrder(), undefined);
+	t.notDeepEqual(nestedStickyRef.current?.getBounds(), visibleBounds);
+});
