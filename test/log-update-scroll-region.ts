@@ -9,7 +9,6 @@ const csiDeleteLines = new RegExp(`${String.fromCodePoint(0x1b)}\\[\\d*M`);
 const csiInsertLines = new RegExp(`${String.fromCodePoint(0x1b)}\\[\\d*L`);
 const csiScrollRegion = new RegExp(
 	`${String.fromCodePoint(0x1b)}\\[\\d+;\\d+r`,
-	'g',
 );
 const cursorVisibility = new RegExp(
 	`${String.fromCodePoint(0x1b)}\\[\\?25[hl]`,
@@ -117,8 +116,9 @@ const applyTerminalWrite = (
 
 				case 'L': {
 					if (row >= scrollTop && row <= scrollBottom) {
-						rows.splice(row, 0, ...blankTerminalRows(count));
-						rows.splice(scrollBottom + 1, count);
+						const effectiveCount = Math.min(count, scrollBottom - row + 1);
+						rows.splice(row, 0, ...blankTerminalRows(effectiveCount));
+						rows.splice(scrollBottom + 1, effectiveCount);
 					}
 
 					break;
@@ -126,11 +126,12 @@ const applyTerminalWrite = (
 
 				case 'M': {
 					if (row >= scrollTop && row <= scrollBottom) {
-						rows.splice(row, count);
+						const effectiveCount = Math.min(count, scrollBottom - row + 1);
+						rows.splice(row, effectiveCount);
 						rows.splice(
-							scrollBottom - count + 1,
+							scrollBottom - effectiveCount + 1,
 							0,
-							...blankTerminalRows(count),
+							...blankTerminalRows(effectiveCount),
 						);
 					}
 
@@ -195,6 +196,63 @@ const applyTerminalSequences = (
 	write: string,
 ): TerminalResult => applyTerminalWrite(initialRows, 0, write);
 
+const countMatches = (write: string, expression: RegExp): number =>
+	write.match(new RegExp(expression.source, 'g'))?.length ?? 0;
+
+const assertNoScrollOptimization = (
+	t: ExecutionContext,
+	write: string,
+): void => {
+	t.notRegex(write, csiDeleteLines);
+	t.notRegex(write, csiInsertLines);
+	t.notRegex(write, csiScrollRegion);
+};
+
+const assertOptimizedScrollOperation = (
+	t: ExecutionContext,
+	write: string,
+	{
+		start,
+		end,
+		rows,
+		height,
+	}: {start: number; end: number; rows: number; height: number},
+): void => {
+	const set = `\u001B[${start + 1};${end}r`;
+	const cup = `\u001B[${start + 1};1H`;
+	const mutation = `\u001B[${Math.abs(rows)}${rows > 0 ? 'M' : 'L'}`;
+	const reset = '\u001B[r';
+
+	t.true(write.includes(`${set}${cup}${mutation}${reset}${cup}`));
+	t.is(countMatches(write, csiScrollRegion), 1);
+	t.is(write.split(reset).length - 1, 1);
+	t.is(
+		countMatches(write, csiDeleteLines) + countMatches(write, csiInsertLines),
+		1,
+	);
+
+	const setIndex = write.indexOf(set);
+	const firstCupIndex = write.indexOf(cup, setIndex + set.length);
+	const mutationIndex = write.indexOf(mutation, firstCupIndex + cup.length);
+	const resetIndex = write.indexOf(reset, mutationIndex + mutation.length);
+	const secondCupIndex = write.indexOf(cup, resetIndex + reset.length);
+	t.true(
+		setIndex >= 0 &&
+			setIndex < firstCupIndex &&
+			firstCupIndex < mutationIndex &&
+			mutationIndex < resetIndex &&
+			resetIndex < secondCupIndex,
+	);
+
+	const result = applyTerminalWrite(
+		blankTerminalRows(height),
+		height - 1,
+		write,
+	);
+	t.is(result.scrollTop, 0);
+	t.is(result.scrollBottom, height - 1);
+};
+
 test('terminal model parses and resets DECSTBM margins', t => {
 	const result = applyTerminalSequences(
 		Array.from({length: 11}, () => ''),
@@ -213,6 +271,26 @@ test('terminal model parses and resets DECSTBM margins', t => {
 	t.is(result.cursorColumn, 0);
 });
 
+test('terminal model clamps line mutations to the remaining scroll region', t => {
+	const initialRows = [
+		'above',
+		'top',
+		'target',
+		'bottom',
+		'suffix 1',
+		'suffix 2',
+	];
+	const expectedRows = ['above', 'top', '', '', 'suffix 1', 'suffix 2'];
+
+	for (const command of ['M', 'L']) {
+		const result = applyTerminalSequences(
+			initialRows,
+			`\u001B[2;4r\u001B[3;1H\u001B[9${command}`,
+		);
+		t.deepEqual(result.rows, expectedRows);
+	}
+});
+
 const assertBoundedFooterShift = (
 	t: ExecutionContext,
 	direction: 'up' | 'down',
@@ -225,13 +303,12 @@ const assertBoundedFooterShift = (
 	render(nextFrame.join('\n'));
 
 	const write = secondWrite(stdout);
-	const operation =
-		direction === 'up'
-			? '\u001B[2;9r\u001B[2;1H\u001B[1M\u001B[r\u001B[2;1H'
-			: '\u001B[2;9r\u001B[2;1H\u001B[1L\u001B[r\u001B[2;1H';
-	t.true(write.includes(operation));
-	t.is(write.split('\u001B[2;9r').length - 1, 1);
-	t.is(write.split('\u001B[r').length - 1, 1);
+	assertOptimizedScrollOperation(t, write, {
+		start: 1,
+		end: 9,
+		rows: direction === 'up' ? 1 : -1,
+		height: previous.length,
+	});
 	t.false(write.includes('COMPOSER STATUS'));
 	t.false(write.includes('COMPOSER INPUT'));
 	t.false(write.includes(direction === 'up' ? 'b4' : 'b5'));
@@ -331,6 +408,12 @@ test('incremental scroll region - shift up rewrites only edge lines', t => {
 	render(['row 3', 'row 4', 'row 5', 'row 6', 'new 7', 'new 8'].join('\n'));
 
 	const write = secondWrite(stdout);
+	assertOptimizedScrollOperation(t, write, {
+		start: 0,
+		end: 6,
+		rows: 2,
+		height: 6,
+	});
 	t.true(
 		write.includes(`${csi}2M`),
 		`expected CSI 2 M (delete 2 lines / scroll up), got: ${JSON.stringify(write)}`,
@@ -352,8 +435,7 @@ test('incremental scroll region - non-fullscreen shift preserves rows below the 
 	render(`${nextRows.join('\n')}\n`);
 
 	const write = secondWrite(stdout);
-	t.notRegex(write, csiDeleteLines);
-	t.notRegex(write, csiInsertLines);
+	assertNoScrollOptimization(t, write);
 	t.is(
 		write,
 		'\u001B[6A\u001B[1Grow 3\u001B[K\n\u001B[1Grow 4\u001B[K\n\u001B[1Grow 5\u001B[K\n\u001B[1Grow 6\u001B[K\n\u001B[1Gnew 7\u001B[K\n\u001B[1Gnew 8\u001B[K\n',
@@ -376,6 +458,12 @@ test('incremental scroll region - shift down emits insert-lines and rewrites top
 	render(['new 0', 'new 1', 'row 1', 'row 2', 'row 3', 'row 4'].join('\n'));
 
 	const write = secondWrite(stdout);
+	assertOptimizedScrollOperation(t, write, {
+		start: 0,
+		end: 6,
+		rows: -2,
+		height: 6,
+	});
 	t.true(
 		write.includes(`${csi}2L`),
 		`expected CSI 2 L (insert 2 lines / scroll down), got: ${JSON.stringify(write)}`,
@@ -398,6 +486,12 @@ test('incremental scroll region - centered interior shift does not IL/DL at fram
 	);
 
 	const write = secondWrite(stdout);
+	assertOptimizedScrollOperation(t, write, {
+		start: 1,
+		end: 9,
+		rows: 1,
+		height: 10,
+	});
 	t.true(
 		write.includes(`${csi}1M`),
 		`expected CSI 1 M at the interior body, got: ${JSON.stringify(write)}`,
@@ -425,6 +519,12 @@ test('incremental scroll region - centered interior shift down emits insert-line
 	);
 
 	const write = secondWrite(stdout);
+	assertOptimizedScrollOperation(t, write, {
+		start: 1,
+		end: 9,
+		rows: -1,
+		height: 10,
+	});
 	t.true(
 		write.includes(`${csi}1L`),
 		`expected CSI 1 L at the interior body, got: ${JSON.stringify(write)}`,
@@ -449,12 +549,7 @@ test('incremental scroll region - changed prefix rejects shift and rewrites chro
 	);
 
 	const write = secondWrite(stdout);
-	t.notRegex(
-		write,
-		csiDeleteLines,
-		`changed HEAD must not take the interior IL/DL path, got: ${JSON.stringify(write)}`,
-	);
-	t.notRegex(write, csiInsertLines);
+	assertNoScrollOptimization(t, write);
 	t.true(
 		write.includes('HEAD2'),
 		`expected changed HEAD to be rewritten, got: ${JSON.stringify(write)}`,
@@ -469,8 +564,7 @@ test('incremental scroll region - below-threshold change stays byte-identical to
 	render(['a', 'X', 'Y', 'Z', 'e', 'f'].join('\n'));
 
 	const write = secondWrite(stdout);
-	t.notRegex(write, csiDeleteLines);
-	t.notRegex(write, csiInsertLines);
+	assertNoScrollOptimization(t, write);
 	t.is(
 		write,
 		'\u001B[5A\u001B[E\u001B[1GX\u001B[K\n\u001B[1GY\u001B[K\n\u001B[1GZ\u001B[K\n\u001B[E',
@@ -510,9 +604,7 @@ test('incremental scroll region - changed footer rejects an unsafe bounded shift
 	render(next.join('\n'));
 
 	const write = secondWrite(stdout);
-	t.notRegex(write, csiDeleteLines);
-	t.notRegex(write, csiInsertLines);
-	t.false(write.includes('\u001B[2;9r'));
+	assertNoScrollOptimization(t, write);
 	const result = applyTerminalWrite(previous, previous.length - 1, write);
 	for (const snapshot of result.snapshots) {
 		t.true(snapshot.rows[9] === previous[9] || snapshot.rows[9] === next[9]);
@@ -529,10 +621,12 @@ test('incremental scroll region - full-frame shift keeps optimized bounded bytes
 	render(['r2', 'r3', 'r4', 'r5', 'r6', 'r7'].join('\n'));
 
 	const write = secondWrite(stdout);
-	t.true(write.includes('\u001B[1;6r\u001B[1;1H\u001B[1M\u001B[r\u001B[1;1H'));
-	t.is(write.split(csiScrollRegion).length - 1, 1);
-	t.is(write.split('\u001B[r').length - 1, 1);
-	t.is(write.split(csiDeleteLines).length - 1, 1);
+	assertOptimizedScrollOperation(t, write, {
+		start: 0,
+		end: 6,
+		rows: 1,
+		height: 6,
+	});
 	const result = applyTerminalWrite(
 		['r1', 'r2', 'r3', 'r4', 'r5', 'r6'],
 		5,
@@ -576,10 +670,17 @@ test('incremental scroll region - bounded shift cache remains surgical on the ne
 	next[4] = 'b5 changed';
 	render(previous.join('\n'));
 	render(shifted.join('\n'));
+	const shiftWrite = secondWrite(stdout);
+	assertOptimizedScrollOperation(t, shiftWrite, {
+		start: 1,
+		end: 9,
+		rows: 1,
+		height: previous.length,
+	});
 	const afterShift = applyTerminalWrite(
 		previous,
 		previous.length - 1,
-		secondWrite(stdout),
+		shiftWrite,
 	);
 	render(next.join('\n'));
 
@@ -626,10 +727,17 @@ test('incremental scroll region - bounded shift preserves a later committed curs
 	];
 	render(previous.join('\n'));
 	render(shifted.join('\n'));
+	const shiftWrite = secondWrite(stdout);
+	assertOptimizedScrollOperation(t, shiftWrite, {
+		start: 1,
+		end: 9,
+		rows: 1,
+		height: previous.length,
+	});
 	const afterShift = applyTerminalWrite(
 		previous,
 		previous.length - 1,
-		secondWrite(stdout),
+		shiftWrite,
 	);
 	render.setCursorPosition({x: 3, y: 4});
 	const next = [...shifted];
@@ -657,18 +765,12 @@ test('incremental scroll region - every installed margin resets in the same writ
 	);
 
 	const write = secondWrite(stdout);
-	const sets = write.match(csiScrollRegion) ?? [];
-	t.is(sets.length, 1);
-	t.is(write.split('\u001B[r').length - 1, 1);
-	const setIndex = write.indexOf(sets[0]!);
-	const cupIndex = write.indexOf('\u001B[2;1H', setIndex);
-	const mutationIndex = write.indexOf('\u001B[1M', cupIndex);
-	const resetIndex = write.indexOf('\u001B[r', mutationIndex);
-	t.true(
-		setIndex < cupIndex &&
-			cupIndex < mutationIndex &&
-			mutationIndex < resetIndex,
-	);
+	assertOptimizedScrollOperation(t, write, {
+		start: 1,
+		end: 9,
+		rows: 1,
+		height: 10,
+	});
 	const result = applyTerminalWrite(
 		['HEAD', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'FOOT'],
 		9,
@@ -684,6 +786,12 @@ test('incremental scroll region - cache correctness after shift', t => {
 
 	render(['r1', 'r2', 'r3', 'r4', 'r5', 'r6'].join('\n'));
 	render(['r3', 'r4', 'r5', 'r6', 'n7', 'n8'].join('\n'));
+	assertOptimizedScrollOperation(t, secondWrite(stdout), {
+		start: 0,
+		end: 6,
+		rows: 2,
+		height: 6,
+	});
 	render(['r3', 'r9', 'r5', 'r6', 'n7', 'n8'].join('\n'));
 
 	const thirdWrite = secondWrite(stdout);
@@ -695,8 +803,21 @@ test('incremental scroll region - cache correctness after shift', t => {
 		thirdWrite.includes('r5\n'),
 		`unchanged r5 must not be rewritten, got: ${JSON.stringify(thirdWrite)}`,
 	);
-	t.notRegex(thirdWrite, csiDeleteLines);
-	t.notRegex(thirdWrite, csiInsertLines);
+	assertNoScrollOptimization(t, thirdWrite);
+});
+
+test('incremental scroll region - committed active cursor rejects a shift-shaped update', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+	const previous = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'];
+	const shifted = ['r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
+
+	render(previous.join('\n'));
+	render.setCursorPosition({x: 2, y: 3});
+	render(previous.join('\n'));
+	render(shifted.join('\n'));
+
+	assertNoScrollOptimization(t, secondWrite(stdout));
 });
 
 test('incremental scroll region - height change skips scroll path', t => {
@@ -707,8 +828,28 @@ test('incremental scroll region - height change skips scroll path', t => {
 	render(['r3', 'r4', 'r5', 'r6'].join('\n'));
 
 	const write = secondWrite(stdout);
-	t.notRegex(write, csiDeleteLines);
-	t.notRegex(write, csiInsertLines);
+	assertNoScrollOptimization(t, write);
+});
+
+test('incremental scroll region - cache reset rejects shifts until a new baseline exists', t => {
+	const stdout = createStdout();
+	const render = logUpdate.create(stdout, {incremental: true});
+	const previous = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'];
+	const shifted = ['r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
+	const shiftedAgain = ['r3', 'r4', 'r5', 'r6', 'r7', 'r8'];
+
+	render(previous.join('\n'));
+	render.reset();
+	render(shifted.join('\n'));
+	assertNoScrollOptimization(t, secondWrite(stdout));
+
+	render(shiftedAgain.join('\n'));
+	assertOptimizedScrollOperation(t, secondWrite(stdout), {
+		start: 0,
+		end: 6,
+		rows: 1,
+		height: 6,
+	});
 });
 
 test('incremental scroll region - escape hatch keeps legacy bytes for a pure shift', t => {
@@ -720,8 +861,10 @@ test('incremental scroll region - escape hatch keeps legacy bytes for a pure shi
 		render(['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'].join('\n'));
 		render(['row 3', 'row 4', 'row 5', 'row 6', 'new 7', 'new 8'].join('\n'));
 
+		const write = secondWrite(stdout);
+		assertNoScrollOptimization(t, write);
 		t.is(
-			secondWrite(stdout),
+			write,
 			'\u001B[5A\u001B[1Grow 3\u001B[K\n\u001B[1Grow 4\u001B[K\n\u001B[1Grow 5\u001B[K\n\u001B[1Grow 6\u001B[K\n\u001B[1Gnew 7\u001B[K\n\u001B[1Gnew 8\u001B[K',
 		);
 	} finally {
