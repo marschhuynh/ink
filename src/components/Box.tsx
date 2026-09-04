@@ -11,6 +11,7 @@ import Yoga from 'yoga-layout';
 import {type Except} from 'type-fest';
 import {type Styles} from '../styles.js';
 import {type DOMElement} from '../dom.js';
+import {getScrollViewportMetadata} from '../layout-metadata.js';
 import {accessibilityContext} from './AccessibilityContext.js';
 import {backgroundContext} from './BackgroundContext.js';
 
@@ -155,7 +156,11 @@ export const createBoxComponent = (
 						yogaNode.getComputedHeight() -
 						yogaNode.getComputedBorder(Yoga.EDGE_TOP) -
 						yogaNode.getComputedBorder(Yoga.EDGE_BOTTOM);
-					const content = getContentDimensions();
+					const metadata = getScrollViewportMetadata(element);
+					const content =
+						viewportCulling && metadata
+							? metadata.contentExtent
+							: getContentDimensions();
 
 					return {
 						x: Math.max(0, content.width - containerWidth),
