@@ -17,6 +17,7 @@ declare namespace Ink {
 	type Box = {
 		internal_static?: boolean;
 		internal_scrollVersion?: number;
+		internal_viewportCulling?: boolean;
 		children?: ReactNode;
 		key?: Key;
 		ref?: Ref<DOMElement>;

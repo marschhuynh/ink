@@ -80,6 +80,10 @@ export type DOMElement = {
 	// runs (dirty root or terminal width change). Metadata caches compare
 	// against this to know when layout-derived data is stale.
 	internal_layoutEpoch?: number;
+	// When true, this box opts into viewport-culling paint behavior (VLBox).
+	internal_viewportCulling?: boolean;
+	// Root-only counter of committed nodes with internal_viewportCulling.
+	internal_viewportCullingCount?: number;
 	// The absolute position at which a `position: "sticky"` node was last drawn
 	// by `renderStickyNode`. While pinned this differs from the natural
 	// (yoga-ancestor-walk) position; `getBounds` prefers it so hit-testing lands

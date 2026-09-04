@@ -1400,6 +1400,13 @@ Background colors work with borders and padding:
 
 See example in [examples/box-backgrounds](examples/box-backgrounds/box-backgrounds.tsx).
 
+### VLBox
+
+`VLBox` accepts the same props and ref API as `Box`. When used with a bounded
+`overflow="scroll"` axis, it retains the full Yoga layout but culls off-screen
+paint work and scrolls without a React update. It does not virtualize mounting
+or provide input handling or a scrollbar.
+
 ### `<Newline>`
 
 Adds one or more newline (`\n`) characters.
