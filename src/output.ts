@@ -1,4 +1,3 @@
-import sliceAnsi from 'slice-ansi';
 import stringWidth from 'string-width';
 import {
 	type StyledChar,
@@ -135,10 +134,17 @@ const trimTrailingSpaces = (
 
 class OutputCaches {
 	widths = new Map<string, number>();
-	blockWidths = new Map<string, number>();
 	styledChars = new Map<string, StyledChar[]>();
+	completeLineWidths = new Map<string, number>();
 
-	getStyledChars(line: string): StyledChar[] {
+	getStyledChars(line: string, maxWidth?: number): StyledChar[] {
+		if (maxWidth !== undefined) {
+			// The tokenizer counts at most two columns per grapheme, while the
+			// grid writes at least one. Include one extra glyph to detect overflow
+			// without trusting the tokenizer's widths or scanning the hidden tail.
+			return styledCharsFromTokens(tokenize(line, (maxWidth + 1) * 2));
+		}
+
 		let cached = this.styledChars.get(line);
 		if (cached === undefined) {
 			cached = styledCharsFromTokens(tokenize(line));
@@ -158,19 +164,21 @@ class OutputCaches {
 		return cached;
 	}
 
-	getWidestLine(text: string): number {
-		let cached = this.blockWidths.get(text);
-		if (cached === undefined) {
-			let lineWidth = 0;
-			for (const line of text.split('\n')) {
-				lineWidth = Math.max(lineWidth, this.getStringWidth(line));
+	getWidestLine(text: string, maxWidth: number): number {
+		let widest = 0;
+		for (const line of text.split('\n')) {
+			let width = 0;
+			for (const character of this.getStyledChars(line, maxWidth)) {
+				width += Math.max(1, this.getStringWidth(character.value));
+				if (width >= maxWidth) {
+					return maxWidth;
+				}
 			}
 
-			cached = lineWidth;
-			this.blockWidths.set(text, cached);
+			widest = Math.max(widest, width);
 		}
 
-		return cached;
+		return widest;
 	}
 }
 
@@ -266,8 +274,8 @@ export default class Output {
 			}
 
 			if (operation.type === 'write') {
-				const {text, transformers, selectable} = operation;
-				let {x, y} = operation;
+				const {text, transformers, selectable, x} = operation;
+				let {y} = operation;
 				let lines = text.split('\n');
 
 				const clip = intersectClips(clips);
@@ -282,9 +290,11 @@ export default class Output {
 					// If text is positioned outside of clipping area altogether,
 					// skip to the next operation to avoid unnecessary calculations
 					if (clipHorizontally) {
-						const width = this.caches.getWidestLine(text);
-
-						if (x + width < clip.x1! || x > clip.x2!) {
+						if (
+							x > clip.x2! ||
+							(x < clip.x1! &&
+								this.caches.getWidestLine(text, clip.x1! - x) < clip.x1! - x)
+						) {
 							continue;
 						}
 					}
@@ -294,26 +304,6 @@ export default class Output {
 
 						if (y + height < clip.y1! || y > clip.y2!) {
 							continue;
-						}
-					}
-
-					if (clipHorizontally) {
-						lines = lines.map(line => {
-							const from = x < clip.x1! ? clip.x1! - x : 0;
-							const width = this.caches.getStringWidth(line);
-							const to = x + width > clip.x2! ? clip.x2! - x : width;
-							// Fully-inside writes are the common case for culled VLBox
-							// rows. slice-ansi still tokenizes the whole string, which
-							// dominates paint of truecolor modal/transcript frames.
-							if (width > 0 && from === 0 && to === width) {
-								return line;
-							}
-
-							return sliceAnsi(line, from, to);
-						});
-
-						if (x < clip.x1!) {
-							x = clip.x1!;
 						}
 					}
 
@@ -341,12 +331,59 @@ export default class Output {
 						continue;
 					}
 
+					let offsetX = x;
+
+					if (typeof clip?.x1 === 'number' && typeof clip?.x2 === 'number') {
+						const {x1, x2} = clip;
+						const width = this.caches.completeLineWidths.get(line);
+						if (width === undefined || x < x1 || x + width > x2) {
+							const characters = this.caches.getStyledChars(line, x2 - x);
+							const visibleCharacters: StyledChar[] = [];
+							let column = x;
+							let clipped = characters.length === 0;
+							// Transformers can add content even when no source glyph survives.
+							offsetX = Math.max(x, x1);
+
+							for (const character of characters) {
+								if (column >= x2) {
+									clipped = true;
+									break;
+								}
+
+								const end =
+									column +
+									Math.max(1, this.caches.getStringWidth(character.value));
+								if (column >= x1 && end <= x2) {
+									// Keep the first surviving glyph at its original column.
+									if (visibleCharacters.length === 0) {
+										offsetX = column;
+									}
+
+									visibleCharacters.push(character);
+								} else {
+									clipped = true;
+								}
+
+								column = end;
+							}
+
+							// Keep fully-inside lines untouched, including their ANSI bytes.
+							if (clipped) {
+								line = styledCharsToString(visibleCharacters);
+							} else {
+								// The bounded lookahead proved this is the complete line.
+								// Reuse its geometry and styles, never a clipped prefix.
+								this.caches.completeLineWidths.set(line, column - x);
+								this.caches.styledChars.set(line, characters);
+							}
+						}
+					}
+
 					for (const transformer of transformers) {
 						line = transformer(line, index);
 					}
 
 					const characters = this.caches.getStyledChars(line);
-					let offsetX = x;
 
 					// Nothing to write (e.g. line was clipped away).
 					if (characters.length === 0) {
