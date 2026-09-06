@@ -1,10 +1,12 @@
-import process from 'node:process';
+import {setImmediate as yieldImmediate} from 'node:timers/promises';
 import EventEmitter from 'node:events';
 import React from 'react';
-import test from 'ava';
-import {stub, spy} from 'sinon';
+import test, {type ExecutionContext} from 'ava';
+import {useFakeTimers, spy} from 'sinon';
 import parseKeypress from '../src/parse-keypress.js';
 import {render, Text} from '../src/index.js';
+import ReadableStdin from './helpers/create-readable-stdin.js';
+import {useStdinContext} from '../src/hooks/use-stdin.js';
 
 const textEncoder = new TextEncoder();
 
@@ -573,14 +575,8 @@ const createFakeStdout = () => {
 	return {stdout, write};
 };
 
-const createFakeStdin = () => {
-	const stdin = new EventEmitter() as unknown as NodeJS.ReadStream;
-	stdin.isTTY = true;
-	stdin.setRawMode = stub();
-	stdin.setEncoding = () => {};
-	stdin.read = stub();
-	return stdin;
-};
+const createFakeStdin = () =>
+	new ReadableStdin() as unknown as NodeJS.ReadStream;
 
 const getWrittenStrings = (write: ReturnType<typeof spy>): string[] =>
 	(write.args as string[][]).map(args => args[0]!);
@@ -652,344 +648,147 @@ test.serial('kitty protocol - not enabled when stdout is not a TTY', t => {
 	unmount();
 });
 
-// --- Auto-detection race condition tests ---
+// Auto-detection uses App's readable/raw owner, not a second data reader.
+const createKittyFixture = (
+	t: ExecutionContext,
+	onWrite?: (text: string, stdin: NodeJS.ReadStream) => void,
+) => {
+	const clock = useFakeTimers({toFake: ['setTimeout', 'clearTimeout']});
+	const {stdout, write} = createFakeStdout();
+	const stdin = createFakeStdin();
+	const inputs: string[] = [];
+	stdout.write = (text: string) => {
+		write(text);
+		onWrite?.(text, stdin);
+		return true;
+	};
+	function App() {
+		const {setRawMode, internal_eventEmitter: emitter} = useStdinContext();
+		React.useEffect(() => {
+			const onInput = (input: string) => {
+				inputs.push(input);
+			};
+			emitter.on('input', onInput);
+			setRawMode(true);
+			return () => {
+				setRawMode(false);
+				emitter.off('input', onInput);
+			};
+		}, [setRawMode, emitter]);
+		return <Text>Hello</Text>;
+	}
+	const instance = render(<App />, {
+		stdout,
+		stdin,
+		interactive: true,
+		patchConsole: false,
+		exitOnCtrlC: false,
+		explicitWidth: 'disabled',
+		kittyKeyboard: {mode: 'auto'},
+	});
+	const exit = instance.waitUntilExit();
+	t.teardown(async () => {
+		instance.unmount();
+		await exit;
+		stdin.destroy();
+		clock.restore();
+	});
+	return {
+		stdin,
+		instance,
+		inputs,
+		clock,
+		exit,
+		writes: () => getWrittenStrings(write),
+	};
+};
 
 test.serial(
 	'kitty protocol - auto detection does not enable protocol after unmount',
-	t => {
-		const {stdout, write} = createFakeStdout();
-		const stdin = createFakeStdin();
-
-		const origKittyId = process.env['KITTY_WINDOW_ID'];
-		process.env['KITTY_WINDOW_ID'] = '1';
-		t.teardown(() => {
-			if (origKittyId === undefined) {
-				delete process.env['KITTY_WINDOW_ID'];
-			} else {
-				process.env['KITTY_WINDOW_ID'] = origKittyId;
-			}
-		});
-
-		const {unmount} = render(<Text>Hello</Text>, {
-			stdout,
-			stdin,
-			kittyKeyboard: {mode: 'auto'},
-		});
-
-		// Unmount before the terminal responds
-		unmount();
-
-		// Simulate a late terminal response arriving after unmount
-		stdin.emit('data', '\u001B[?1u');
-
-		// The enable sequence should NOT have been written after unmount
-		const strings = getWrittenStrings(write);
-		const enableCount = strings.filter(s => s === '\u001B[>1u').length;
-		t.is(enableCount, 0);
+	async t => {
+		const h = createKittyFixture(t);
+		await h.instance.waitUntilRenderFlush();
+		t.true(h.writes().includes('\u001B[?u'));
+		h.instance.unmount();
+		await h.exit;
+		h.stdin.push('\u001B[?1u');
+		await yieldImmediate();
+		t.false(h.writes().includes('\u001B[>1u'));
+		t.is(h.stdin.listenerCount('readable'), 0);
+		t.is(h.stdin.listenerCount('data'), 0);
 	},
 );
 
 test.serial(
 	'kitty protocol - auto detection handles synchronous query response',
-	t => {
-		const {stdout} = createFakeStdout();
-		const stdin = createFakeStdin();
-		const writtenStrings: string[] = [];
-
-		// Override stdout.write to synchronously emit the response on stdin
-		// when the query sequence is written, simulating a fast terminal
-		stdout.write = (data: string) => {
-			writtenStrings.push(data);
-			if (data === '\u001B[?u') {
-				stdin.emit('data', '\u001B[?1u');
-			}
-
-			return true;
-		};
-
-		const origKittyId = process.env['KITTY_WINDOW_ID'];
-		process.env['KITTY_WINDOW_ID'] = '1';
-		t.teardown(() => {
-			if (origKittyId === undefined) {
-				delete process.env['KITTY_WINDOW_ID'];
-			} else {
-				process.env['KITTY_WINDOW_ID'] = origKittyId;
-			}
+	async t => {
+		const h = createKittyFixture(t, (text, stdin) => {
+			if (text === '\u001B[?u') stdin.push('x\u001B[?1u');
 		});
-
-		const {unmount} = render(<Text>Hello</Text>, {
-			stdout,
-			stdin,
-			kittyKeyboard: {mode: 'auto'},
-		});
-
-		// The enable sequence should have been written
-		t.true(writtenStrings.includes('\u001B[>1u'));
-
-		unmount();
+		await h.instance.waitUntilRenderFlush();
+		t.true(h.writes().includes('\u001B[>1u'));
+		t.deepEqual(h.inputs, ['x']);
+		t.is(h.stdin.listenerCount('data'), 0);
 	},
 );
 
 test.serial(
 	'kitty protocol - auto detection handles Uint8Array query response',
-	t => {
-		const {stdout, write} = createFakeStdout();
-		const stdin = createFakeStdin();
-
-		const origKittyId = process.env['KITTY_WINDOW_ID'];
-		process.env['KITTY_WINDOW_ID'] = '1';
-		t.teardown(() => {
-			if (origKittyId === undefined) {
-				delete process.env['KITTY_WINDOW_ID'];
-			} else {
-				process.env['KITTY_WINDOW_ID'] = origKittyId;
-			}
+	async t => {
+		const h = createKittyFixture(t, (text, stdin) => {
+			if (text === '\u001B[?u') stdin.push(textEncoder.encode('\u001B[?1u'));
 		});
-
-		const {unmount} = render(<Text>Hello</Text>, {
-			stdout,
-			stdin,
-			kittyKeyboard: {mode: 'auto'},
-		});
-
-		// Respond with Uint8Array instead of string
-		const response = textEncoder.encode('\u001B[?1u');
-		stdin.emit('data', response);
-
-		// The enable sequence should have been written
-		const strings = getWrittenStrings(write);
-		t.true(strings.includes('\u001B[>1u'));
-
-		unmount();
+		await h.instance.waitUntilRenderFlush();
+		t.true(h.writes().includes('\u001B[>1u'));
+		t.deepEqual(h.inputs, []);
 	},
 );
 
 test.serial(
 	'kitty protocol - auto detection preserves split UTF-8 input bytes',
 	async t => {
-		const {stdout} = createFakeStdout();
-		const stdin = createFakeStdin();
-		const unshifted: Uint8Array[] = [];
-
-		const concatUint8Arrays = (chunks: Uint8Array[]): number[] => {
-			const merged: number[] = [];
-			for (const chunk of chunks) {
-				for (const byte of chunk) {
-					merged.push(byte);
-				}
-			}
-
-			return merged;
-		};
-
-		stdin.unshift = ((chunk: Uint8Array) => {
-			unshifted.push(Uint8Array.from(chunk));
-			return true;
-		}) as typeof stdin.unshift;
-
-		const origKittyId = process.env['KITTY_WINDOW_ID'];
-		process.env['KITTY_WINDOW_ID'] = '1';
-		t.teardown(() => {
-			if (origKittyId === undefined) {
-				delete process.env['KITTY_WINDOW_ID'];
-			} else {
-				process.env['KITTY_WINDOW_ID'] = origKittyId;
-			}
-		});
-
-		const {unmount} = render(<Text>Hello</Text>, {
-			stdout,
-			stdin,
-			kittyKeyboard: {mode: 'auto'},
-		});
-
-		// Emit one UTF-8 emoji split across chunks during detection.
-		stdin.emit('data', new Uint8Array([0xf0, 0x9f]));
-		stdin.emit('data', new Uint8Array([0x92, 0xa9]));
-
-		await new Promise(resolve => {
-			setTimeout(resolve, 250);
-		});
-
-		t.deepEqual(concatUint8Arrays(unshifted), [0xf0, 0x9f, 0x92, 0xa9]);
-		unmount();
+		const h = createKittyFixture(t);
+		await h.instance.waitUntilRenderFlush();
+		h.stdin.push(new Uint8Array([0xf0, 0x9f]));
+		h.stdin.push(new Uint8Array([0x92, 0xa9]));
+		await yieldImmediate();
+		await h.clock.tickAsync(225);
+		t.deepEqual(h.inputs, ['💩']);
+		t.false(h.writes().includes('\u001B[>1u'));
 	},
 );
 
 test.serial(
 	'kitty protocol - auto detection timeout does not leak partial query response',
 	async t => {
-		const {stdout} = createFakeStdout();
-		const stdin = createFakeStdin();
-		const unshifted: Uint8Array[] = [];
-
-		stdin.unshift = ((chunk: Uint8Array) => {
-			unshifted.push(Uint8Array.from(chunk));
-			return true;
-		}) as typeof stdin.unshift;
-
-		const origKittyId = process.env['KITTY_WINDOW_ID'];
-		process.env['KITTY_WINDOW_ID'] = '1';
-		t.teardown(() => {
-			if (origKittyId === undefined) {
-				delete process.env['KITTY_WINDOW_ID'];
-			} else {
-				process.env['KITTY_WINDOW_ID'] = origKittyId;
-			}
-		});
-
-		const {unmount} = render(<Text>Hello</Text>, {
-			stdout,
-			stdin,
-			kittyKeyboard: {mode: 'auto'},
-		});
-
-		// Simulate partial terminal response that times out before completion.
-		stdin.emit('data', '\u001B[?1');
-
-		await new Promise(resolve => {
-			setTimeout(resolve, 250);
-		});
-
-		t.is(unshifted.length, 0);
-		unmount();
+		const h = createKittyFixture(t);
+		await h.instance.waitUntilRenderFlush();
+		h.stdin.push('\u001B[?1');
+		await yieldImmediate();
+		await h.clock.tickAsync(225);
+		t.deepEqual(h.inputs, []);
+		h.stdin.push('uz');
+		await yieldImmediate();
+		t.deepEqual(h.inputs, ['z']);
+		t.false(h.writes().includes('\u001B[>1u'));
 	},
 );
 
-test.serial(
-	'kitty protocol - auto detection timeout preserves query prefix without digits',
-	async t => {
-		const {stdout, write} = createFakeStdout();
-		const stdin = createFakeStdin();
-		const unshifted: Uint8Array[] = [];
-
-		stdin.unshift = ((chunk: Uint8Array) => {
-			unshifted.push(Uint8Array.from(chunk));
-			return true;
-		}) as typeof stdin.unshift;
-
-		const origKittyId = process.env['KITTY_WINDOW_ID'];
-		process.env['KITTY_WINDOW_ID'] = '1';
-		t.teardown(() => {
-			if (origKittyId === undefined) {
-				delete process.env['KITTY_WINDOW_ID'];
-			} else {
-				process.env['KITTY_WINDOW_ID'] = origKittyId;
-			}
-		});
-
-		const {unmount} = render(<Text>Hello</Text>, {
-			stdout,
-			stdin,
-			kittyKeyboard: {mode: 'auto'},
-		});
-
-		stdin.emit('data', '\u001B[?');
-
-		await new Promise(resolve => {
-			setTimeout(resolve, 250);
-		});
-
-		const strings = getWrittenStrings(write);
-		const enableCount = strings.filter(s => s === '\u001B[>1u').length;
-		t.is(enableCount, 0);
-		t.deepEqual(
-			unshifted.map(chunk => [...chunk]),
-			[[0x1b, 0x5b, 0x3f]],
-		);
-		unmount();
-	},
-);
-
-test.serial(
-	'kitty protocol - auto detection ignores query response without digits',
-	async t => {
-		const {stdout, write} = createFakeStdout();
-		const stdin = createFakeStdin();
-		const unshifted: Uint8Array[] = [];
-
-		stdin.unshift = ((chunk: Uint8Array) => {
-			unshifted.push(Uint8Array.from(chunk));
-			return true;
-		}) as typeof stdin.unshift;
-
-		const origKittyId = process.env['KITTY_WINDOW_ID'];
-		process.env['KITTY_WINDOW_ID'] = '1';
-		t.teardown(() => {
-			if (origKittyId === undefined) {
-				delete process.env['KITTY_WINDOW_ID'];
-			} else {
-				process.env['KITTY_WINDOW_ID'] = origKittyId;
-			}
-		});
-
-		const {unmount} = render(<Text>Hello</Text>, {
-			stdout,
-			stdin,
-			kittyKeyboard: {mode: 'auto'},
-		});
-
-		stdin.emit('data', '\u001B[?u');
-
-		await new Promise(resolve => {
-			setTimeout(resolve, 250);
-		});
-
-		const strings = getWrittenStrings(write);
-		const enableCount = strings.filter(s => s === '\u001B[>1u').length;
-		t.is(enableCount, 0);
-		t.deepEqual(
-			unshifted.map(chunk => [...chunk]),
-			[[0x1b, 0x5b, 0x3f, 0x75]],
-		);
-		unmount();
-	},
-);
-
-test.serial(
-	'kitty protocol - auto detection preserves invalid query-like escape sequence',
-	async t => {
-		const {stdout, write} = createFakeStdout();
-		const stdin = createFakeStdin();
-		const unshifted: Uint8Array[] = [];
-
-		stdin.unshift = ((chunk: Uint8Array) => {
-			unshifted.push(Uint8Array.from(chunk));
-			return true;
-		}) as typeof stdin.unshift;
-
-		const origKittyId = process.env['KITTY_WINDOW_ID'];
-		process.env['KITTY_WINDOW_ID'] = '1';
-		t.teardown(() => {
-			if (origKittyId === undefined) {
-				delete process.env['KITTY_WINDOW_ID'];
-			} else {
-				process.env['KITTY_WINDOW_ID'] = origKittyId;
-			}
-		});
-
-		const {unmount} = render(<Text>Hello</Text>, {
-			stdout,
-			stdin,
-			kittyKeyboard: {mode: 'auto'},
-		});
-
-		stdin.emit('data', '\u001B[?1x');
-
-		await new Promise(resolve => {
-			setTimeout(resolve, 250);
-		});
-
-		const strings = getWrittenStrings(write);
-		const enableCount = strings.filter(s => s === '\u001B[>1u').length;
-		t.is(enableCount, 0);
-		t.deepEqual(
-			unshifted.map(chunk => [...chunk]),
-			[[0x1b, 0x5b, 0x3f, 0x31, 0x78]],
-		);
-		unmount();
-	},
-);
+for (const [name, input] of [
+	['timeout preserves query prefix without digits', '\u001B[?'],
+	['ignores query response without digits', '\u001B[?u'],
+	['preserves invalid query-like escape sequence', '\u001B[?1x'],
+] as const) {
+	test.serial('kitty protocol - auto detection ' + name, async t => {
+		const h = createKittyFixture(t);
+		await h.instance.waitUntilRenderFlush();
+		h.stdin.push(input);
+		await yieldImmediate();
+		await h.clock.tickAsync(225);
+		t.deepEqual(h.inputs, [input]);
+		t.false(h.writes().includes('\u001B[>1u'));
+	});
+}
 
 // --- Space and return text input tests ---
 

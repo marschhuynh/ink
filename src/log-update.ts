@@ -19,6 +19,15 @@ type EraseOptions = {
 	eraseLineCount?: number;
 };
 
+type OutputOptions = {
+	showCursor?: boolean;
+	transformOutput?: (text: string) => string;
+};
+
+type CreateOptions = OutputOptions & {
+	incremental?: boolean;
+};
+
 export type LogUpdate = {
 	clear: (options?: EraseOptions) => void;
 	done: () => void;
@@ -189,7 +198,7 @@ const detectScrollShift = (
 
 const createStandard = (
 	stream: Writable,
-	{showCursor = false} = {},
+	{showCursor = false, transformOutput}: OutputOptions = {},
 ): LogUpdate => {
 	let previousLineCount = 0;
 	let previousOutput = '';
@@ -257,7 +266,7 @@ const createStandard = (
 					ansiEscapes.eraseLines(
 						getEraseLineCount(previousLineCount, options),
 					) +
-					str +
+					(transformOutput ? transformOutput(str) : str) +
 					cursorSuffix,
 			);
 			previousLineCount = lines.length;
@@ -354,7 +363,7 @@ const createStandard = (
 
 const createIncremental = (
 	stream: Writable,
-	{showCursor = false} = {},
+	{showCursor = false, transformOutput}: OutputOptions = {},
 ): LogUpdate => {
 	let previousLines: string[] = [];
 	let previousOutput = '';
@@ -427,7 +436,7 @@ const createIncremental = (
 			stream.write(
 				returnPrefix +
 					ansiEscapes.eraseLines(previousLines.length) +
-					str +
+					(transformOutput ? transformOutput(str) : str) +
 					cursorSuffix,
 			);
 			cursorWasShown = activeCursor !== undefined;
@@ -507,7 +516,7 @@ const createIncremental = (
 
 			buffer.push(
 				ansiEscapes.cursorTo(0) +
-					nextLines[i] +
+					(transformOutput ? transformOutput(nextLines[i]!) : nextLines[i]) +
 					ansiEscapes.eraseEndLine +
 					// Don't append newline after the last line when the input
 					// has no trailing newline (fullscreen mode).
@@ -549,7 +558,7 @@ const createIncremental = (
 				ansiEscapes.eraseLines(
 					getEraseLineCount(previousLines.length, options),
 				) +
-				str +
+				(transformOutput ? transformOutput(str) : str) +
 				cursorSuffix,
 		);
 
@@ -644,13 +653,17 @@ const createIncremental = (
 
 const create = (
 	stream: Writable,
-	{showCursor = false, incremental = false} = {},
+	{
+		showCursor = false,
+		incremental = false,
+		transformOutput,
+	}: CreateOptions = {},
 ): LogUpdate => {
 	if (incremental) {
-		return createIncremental(stream, {showCursor});
+		return createIncremental(stream, {showCursor, transformOutput});
 	}
 
-	return createStandard(stream, {showCursor});
+	return createStandard(stream, {showCursor, transformOutput});
 };
 
 const logUpdate = {create};

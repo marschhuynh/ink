@@ -105,6 +105,13 @@ export type RenderOptions = {
 	kittyKeyboard?: KittyKeyboardOptions;
 
 	/**
+	Automatically negotiate OSC 66 explicit text widths for eligible interactive terminals.
+	Set to `disabled` to skip detection and override the manual environment switch.
+	@default 'auto'
+	*/
+	explicitWidth?: 'auto' | 'disabled';
+
+	/**
 	Override automatic interactive mode detection.
 
 	By default, Ink detects whether the environment is interactive based on CI detection (via [`is-in-ci`](https://github.com/sindresorhus/is-in-ci)) and `stdout.isTTY`. Most users should not need to set this.

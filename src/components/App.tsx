@@ -10,7 +10,7 @@ import React, {
 } from 'react';
 import cliCursor from 'cli-cursor';
 import {type CursorPosition} from '../log-update.js';
-import {createInputParser} from '../input-parser.js';
+import {createInputParser, type TerminalResponse} from '../input-parser.js';
 import {type TextSelectionController} from '../text-selection-controller.js';
 import AppContext from './AppContext.js';
 import StdinContext from './StdinContext.js';
@@ -47,6 +47,13 @@ type Props = {
 	readonly interactive: boolean;
 	readonly renderThrottleMs: number;
 	readonly textSelection?: TextSelectionController;
+	readonly onTerminalResponse?: (response: TerminalResponse) => void;
+	readonly isTerminalResponsePending?: () => boolean;
+	readonly onInputReady?: (
+		ready: boolean,
+		resumePendingInput?: () => void,
+		afterSettlement?: () => void,
+	) => void;
 };
 
 type Focusable = {
@@ -71,6 +78,9 @@ function App({
 	interactive,
 	renderThrottleMs,
 	textSelection,
+	onTerminalResponse,
+	isTerminalResponsePending,
+	onInputReady,
 }: Props): React.ReactNode {
 	const [isFocusEnabled, setIsFocusEnabled] = useState(true);
 	const [activeFocusId, setActiveFocusId] = useState<string | undefined>(
@@ -98,8 +108,11 @@ function App({
 	internal_eventEmitter.current.setMaxListeners(Infinity);
 	// Store the currently attached readable listener to avoid stale closure issues
 	const readableListenerRef = useRef<(() => void) | undefined>(undefined);
-	const inputParserRef = useRef(createInputParser());
+	const inputParserRef = useRef(
+		createInputParser({onTerminalResponse, isTerminalResponsePending}),
+	);
 	const pendingInputFlushRef = useRef<NodeJS.Timeout | undefined>(undefined);
+	const emitInputRef = useRef<(input: string) => void>(() => {});
 	// Small delay to let chunked escape sequences complete before flushing as literal input.
 	const pendingInputFlushDelayMilliseconds = 20;
 
@@ -213,13 +226,22 @@ function App({
 	}, [stdin]);
 
 	const disableRawMode = useCallback((): void => {
-		stdin.setRawMode(false);
-		detachReadableListener();
-		stdin.unref();
 		rawModeEnabledCount.current = 0;
-		inputParserRef.current.reset();
-		clearPendingInputFlush();
-	}, [stdin, detachReadableListener, clearPendingInputFlush]);
+		const finishDisableRawMode = () => {
+			clearPendingInputFlush();
+			const pendingEscape = inputParserRef.current.flushPendingEscape();
+			if (pendingEscape) emitInputRef.current(pendingEscape);
+			stdin.setRawMode(false);
+			detachReadableListener();
+			stdin.unref();
+			inputParserRef.current.reset();
+		};
+		if (onInputReady) {
+			onInputReady(false, undefined, finishDisableRawMode);
+		} else {
+			finishDisableRawMode();
+		}
+	}, [stdin, detachReadableListener, clearPendingInputFlush, onInputReady]);
 
 	const handleExit = useCallback(
 		(errorOrResult?: unknown): void => {
@@ -256,6 +278,7 @@ function App({
 		},
 		[handleInput],
 	);
+	emitInputRef.current = emitInput;
 
 	const schedulePendingInputFlush = useCallback((): void => {
 		clearPendingInputFlush();
@@ -314,8 +337,9 @@ function App({
 			stdin.setEncoding('utf8');
 
 			if (isEnabled) {
+				const wasDisabled = rawModeEnabledCount.current === 0;
 				// Ensure raw mode is enabled only once
-				if (rawModeEnabledCount.current === 0) {
+				if (wasDisabled) {
 					stdin.ref();
 					stdin.setRawMode(true);
 					// Store the listener reference to avoid stale closure when removing
@@ -324,6 +348,24 @@ function App({
 				}
 
 				rawModeEnabledCount.current++;
+				if (wasDisabled) {
+					// Let input hooks finish subscribing before a synchronous terminal
+					// reply can deliver ordinary keys alongside capability responses.
+					queueMicrotask(() => {
+						if (
+							rawModeEnabledCount.current > 0 &&
+							readableListenerRef.current
+						) {
+							onInputReady?.(true, () => {
+								handleReadable();
+								clearPendingInputFlush();
+								const pendingEscape =
+									inputParserRef.current.flushPendingEscape();
+								if (pendingEscape) emitInput(pendingEscape);
+							});
+						}
+					});
+				}
 				return;
 			}
 
@@ -336,7 +378,15 @@ function App({
 				disableRawMode();
 			}
 		},
-		[isRawModeSupported, stdin, handleReadable, disableRawMode],
+		[
+			isRawModeSupported,
+			stdin,
+			handleReadable,
+			disableRawMode,
+			onInputReady,
+			clearPendingInputFlush,
+			emitInput,
+		],
 	);
 
 	const handleSetBracketedPasteMode = useCallback(

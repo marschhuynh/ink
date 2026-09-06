@@ -17,6 +17,12 @@ import render from './renderer.js';
 import * as dom from './dom.js';
 import {hideCursorEscape, showCursorEscape} from './cursor-helpers.js';
 import logUpdate, {type LogUpdate, type CursorPosition} from './log-update.js';
+import {createExplicitWidthEncoder} from './explicit-width.js';
+import {
+	ExplicitWidthDetection,
+	canOverwriteFirstCell,
+} from './explicit-width-detection.js';
+import {type TerminalResponse} from './input-parser.js';
 import {bsu, esu, shouldSynchronize} from './write-synchronized.js';
 import instances from './instances.js';
 import {TextSelectionController} from './text-selection-controller.js';
@@ -29,92 +35,11 @@ import {
 } from './kitty-keyboard.js';
 
 const noop = () => {};
-const textEncoder = new TextEncoder();
 
 const yieldImmediate = async () =>
 	new Promise<void>(resolve => {
 		setImmediate(resolve);
 	});
-
-const kittyQueryEscapeByte = 0x1b;
-const kittyQueryOpenBracketByte = 0x5b;
-const kittyQueryQuestionMarkByte = 0x3f;
-const kittyQueryLetterByte = 0x75;
-const zeroByte = 0x30;
-const nineByte = 0x39;
-
-type KittyQueryResponseMatch =
-	{state: 'complete'; endIndex: number} | {state: 'partial'};
-
-const isDigitByte = (byte: number): boolean =>
-	byte >= zeroByte && byte <= nineByte;
-
-const matchKittyQueryResponse = (
-	buffer: number[],
-	startIndex: number,
-): KittyQueryResponseMatch | undefined => {
-	if (
-		buffer[startIndex] !== kittyQueryEscapeByte ||
-		buffer[startIndex + 1] !== kittyQueryOpenBracketByte ||
-		buffer[startIndex + 2] !== kittyQueryQuestionMarkByte
-	) {
-		return undefined;
-	}
-
-	let index = startIndex + 3;
-	const digitsStartIndex = index;
-	while (index < buffer.length && isDigitByte(buffer[index]!)) {
-		index++;
-	}
-
-	if (index === digitsStartIndex) {
-		return undefined;
-	}
-
-	if (index === buffer.length) {
-		return {state: 'partial'};
-	}
-
-	if (buffer[index] === kittyQueryLetterByte) {
-		return {state: 'complete', endIndex: index};
-	}
-
-	return undefined;
-};
-
-const hasCompleteKittyQueryResponse = (buffer: number[]): boolean => {
-	for (let index = 0; index < buffer.length; index++) {
-		const match = matchKittyQueryResponse(buffer, index);
-		if (match?.state === 'complete') {
-			return true;
-		}
-	}
-
-	return false;
-};
-
-const stripKittyQueryResponsesAndTrailingPartial = (
-	buffer: number[],
-): number[] => {
-	const keptBytes: number[] = [];
-	let index = 0;
-	while (index < buffer.length) {
-		const match = matchKittyQueryResponse(buffer, index);
-		if (match?.state === 'complete') {
-			index = match.endIndex + 1;
-			continue;
-		}
-
-		if (match?.state === 'partial') {
-			break;
-		}
-
-		keptBytes.push(buffer[index]!);
-		index++;
-	}
-
-	return keptBytes;
-};
 
 const shouldClearTerminalForFrame = ({
 	isTty,
@@ -272,6 +197,13 @@ export type RenderMetrics = {
 	renderTime: number;
 };
 
+type PendingFrame = {
+	output: string;
+	outputHeight: number;
+	staticOutput: string;
+	maxVisualWidth?: number;
+};
+
 export type Options = {
 	stdout: NodeJS.WriteStream;
 	stdin: NodeJS.ReadStream;
@@ -300,6 +232,7 @@ export type Options = {
 	*/
 	concurrent?: boolean;
 	kittyKeyboard?: KittyKeyboardOptions;
+	explicitWidth?: 'auto' | 'disabled';
 
 	/**
 	Override automatic interactive mode detection.
@@ -380,6 +313,16 @@ export default class Ink {
 	private nextRenderCommit?: {promise: Promise<void>; resolve: () => void};
 	private readonly textSelection: TextSelectionController;
 	private lastLayoutWidth?: number;
+	private transformOutput?: (output: string) => string;
+	private readonly widthDetection?: ExplicitWidthDetection;
+	private pendingFrame?: PendingFrame;
+	private reservedFrame?: PendingFrame;
+	private readonly deferredWidthRenders: ReactNode[] = [];
+	private readonly deferredWidthLifecycleActions: Array<() => void> = [];
+	private rawInputReady = false;
+	private resumePendingInput?: () => void;
+	private kittyAutoFlags?: KittyFlagName[];
+	private kittyQuerySent = false;
 
 	constructor(options: Options) {
 		autoBind(this);
@@ -403,6 +346,41 @@ export default class Ink {
 		// Using Boolean(isTTY) (rather than an 'in' guard) correctly handles piped streams
 		// where the property is absent (e.g. `node app.js | cat`).
 		this.interactive = this.resolveInteractiveOption(options.interactive);
+
+		const explicitWidth = process.env['INK_EXPLICIT_WIDTH'];
+		const canUseExplicitWidth =
+			options.explicitWidth !== 'disabled' &&
+			this.interactive &&
+			Boolean(options.stdout.isTTY) &&
+			!options.debug &&
+			!this.isScreenReaderEnabled;
+		if (canUseExplicitWidth && explicitWidth === '1') {
+			this.transformOutput = createExplicitWidthEncoder();
+		} else if (
+			canUseExplicitWidth &&
+			explicitWidth !== '0' &&
+			options.stdin.isTTY &&
+			options.stdin.readable &&
+			typeof options.stdin.setRawMode === 'function' &&
+			typeof options.stdin.ref === 'function' &&
+			typeof options.stdin.unref === 'function'
+		) {
+			this.widthDetection = new ExplicitWidthDetection({
+				getSize: () => getWindowSize(this.options.stdout),
+				write: text => {
+					if (
+						!getWritableStreamState(this.options.stdout as MaybeWritableStream)
+							.canWriteToStdout
+					) {
+						throw new Error('Terminal output is unavailable');
+					}
+					this.options.stdout.write(text);
+				},
+				reserve: this.reserveExplicitWidthFrame,
+				onResult: this.settleExplicitWidth,
+			});
+			this.widthDetection.onSettled(this.finishExplicitWidthSettlement);
+		}
 
 		this.alternateScreen = false;
 
@@ -434,6 +412,9 @@ export default class Ink {
 		this.rootNode.onImmediateRender = this.onRender;
 		this.log = logUpdate.create(options.stdout, {
 			incremental: options.incrementalRendering,
+			transformOutput: this.widthDetection
+				? this.encodeTerminalOutput
+				: this.transformOutput,
 		});
 		this.cursorPosition = undefined;
 		this.throttledLog = unthrottled
@@ -531,6 +512,8 @@ export default class Ink {
 	}
 
 	resized = () => {
+		if (this.deferUntilExplicitWidthSettlement(this.resized)) return;
+
 		const currentWidth = getWindowSize(this.options.stdout).columns;
 		this.calculateLayout();
 		this.onRender();
@@ -701,19 +684,40 @@ export default class Ink {
 			return;
 		}
 
-		if (hasStaticOutput) {
-			this.fullStaticOutput += staticOutput;
-		}
-
-		this.renderInteractiveFrame(
+		const frame: PendingFrame = {
 			output,
 			outputHeight,
-			hasStaticOutput ? staticOutput : '',
+			staticOutput: hasStaticOutput ? staticOutput : '',
 			maxVisualWidth,
-		);
+		};
+		if (this.widthDetection && !this.widthDetection.settled) {
+			this.pendingFrame = {
+				...frame,
+				staticOutput:
+					(this.pendingFrame?.staticOutput ?? '') + frame.staticOutput,
+			};
+			if (
+				!this.widthDetection.pending &&
+				!frame.output &&
+				!frame.staticOutput
+			) {
+				// No physical frame exists yet; keep the first nonempty frame eligible.
+				return;
+			} else {
+				this.widthDetection.start();
+			}
+			return;
+		}
+		this.commitInteractiveFrame(frame);
 	};
 
 	render(node: ReactNode): void {
+		if (this.widthDetection?.publicationBlocked) {
+			this.deferredWidthRenders.push(node);
+			this.widthDetection.cancel();
+			return;
+		}
+
 		const tree = (
 			<AccessibilityContext.Provider
 				value={{isScreenReaderEnabled: this.isScreenReaderEnabled}}
@@ -731,6 +735,21 @@ export default class Ink {
 					textSelection={this.textSelection}
 					onExit={this.handleAppExit}
 					onWaitUntilRenderFlush={this.waitUntilRenderFlush}
+					onTerminalResponse={
+						this.widthDetection || this.kittyAutoFlags
+							? this.handleTerminalResponse
+							: undefined
+					}
+					isTerminalResponsePending={
+						this.widthDetection || this.kittyAutoFlags
+							? this.isTerminalResponsePending
+							: undefined
+					}
+					onInputReady={
+						this.widthDetection || this.kittyAutoFlags
+							? this.handleInputReady
+							: undefined
+					}
 				>
 					{node}
 				</App>
@@ -751,6 +770,8 @@ export default class Ink {
 		if (this.isUnmounted) {
 			return;
 		}
+		if (this.deferUntilExplicitWidthSettlement(() => this.writeToStdout(data)))
+			return;
 
 		if (this.options.debug) {
 			this.options.stdout.write(data + this.fullStaticOutput + this.lastOutput);
@@ -780,6 +801,8 @@ export default class Ink {
 		if (this.isUnmounted) {
 			return;
 		}
+		if (this.deferUntilExplicitWidthSettlement(() => this.writeToStderr(data)))
+			return;
 
 		if (this.options.debug) {
 			this.options.stderr.write(data);
@@ -812,6 +835,8 @@ export default class Ink {
 			return;
 		}
 
+		if (this.deferUntilExplicitWidthSettlement(() => this.unmount(error)))
+			return;
 		this.isUnmounting = true;
 
 		if (this.beforeExitHandler) {
@@ -990,6 +1015,16 @@ export default class Ink {
 		}
 
 		reconciler.flushSyncWork();
+		settleThrottle(
+			this.throttledOnRender,
+			getWritableStreamState(this.options.stdout as MaybeWritableStream)
+				.canWriteToStdout,
+		);
+		if (this.widthDetection?.pending) await this.widthDetection.finished;
+		if (this.isUnmounted || this.isUnmounting) {
+			await this.awaitExit();
+			return;
+		}
 
 		const stdout = this.options.stdout as MaybeWritableStream;
 		const {canWriteToStdout, hasWritableState} = getWritableStreamState(stdout);
@@ -1011,6 +1046,7 @@ export default class Ink {
 	}
 
 	clear(): void {
+		if (this.deferUntilExplicitWidthSettlement(this.clear)) return;
 		if (this.interactive && !this.options.debug) {
 			this.log.clear(this.getPhysicalEraseOptions());
 			this.hasPhysicalFrame = false;
@@ -1199,8 +1235,10 @@ export default class Ink {
 				this.options.stdout.write(bsu);
 			}
 
+			const content = this.fullStaticOutput + outputToRender;
 			this.options.stdout.write(
-				ansiEscapes.clearTerminal + this.fullStaticOutput + outputToRender,
+				ansiEscapes.clearTerminal +
+					(this.transformOutput?.(content) ?? content),
 			);
 			this.lastOutput = output;
 			this.lastOutputToRender = outputToRender;
@@ -1231,7 +1269,9 @@ export default class Ink {
 			}
 
 			this.log.clear(reflowEraseOptions);
-			this.options.stdout.write(staticOutput);
+			this.options.stdout.write(
+				this.transformOutput?.(staticOutput) ?? staticOutput,
+			);
 			this.log(outputToRender);
 			didWriteFrame = true;
 
@@ -1274,6 +1314,130 @@ export default class Ink {
 		this.lastTerminalWidth = terminalWidth;
 	}
 
+	private encodeTerminalOutput(output: string): string {
+		return this.transformOutput?.(output) ?? output;
+	}
+
+	private commitInteractiveFrame(frame: PendingFrame): void {
+		// Pending Static deltas must not leak into an earlier frame's replay.
+		this.fullStaticOutput += frame.staticOutput;
+		this.renderInteractiveFrame(
+			frame.output,
+			frame.outputHeight,
+			frame.staticOutput,
+			frame.maxVisualWidth,
+		);
+	}
+
+	private reserveExplicitWidthFrame(): boolean {
+		const frame = this.pendingFrame;
+		if (!frame || !canOverwriteFirstCell(frame.staticOutput || frame.output))
+			return false;
+		this.reservedFrame = frame;
+		this.pendingFrame = undefined;
+		return true;
+	}
+
+	private settleExplicitWidth(supported: boolean): void {
+		const reserved = this.reservedFrame;
+		this.reservedFrame = undefined;
+		if (supported) this.transformOutput = createExplicitWidthEncoder();
+		try {
+			if (
+				this.isUnmounted ||
+				!getWritableStreamState(this.options.stdout as MaybeWritableStream)
+					.canWriteToStdout
+			)
+				return;
+			if (reserved) this.commitInteractiveFrame(reserved);
+			while (true) {
+				settleThrottle(this.throttledOnRender, true);
+				if (!this.pendingFrame) break;
+				const pending = this.pendingFrame;
+				this.pendingFrame = undefined;
+				this.commitInteractiveFrame(pending);
+			}
+		} finally {
+			this.pendingFrame = undefined;
+		}
+	}
+
+	private deferUntilExplicitWidthSettlement(action: () => void): boolean {
+		const detection = this.widthDetection;
+		if (!detection || detection.settled) return false;
+		this.deferredWidthLifecycleActions.push(action);
+		detection.cancel();
+		return true;
+	}
+
+	private finishExplicitWidthSettlement(): void {
+		this.resumePendingInput?.();
+		for (const node of this.deferredWidthRenders.splice(0)) this.render(node);
+		const canWriteToStdout = getWritableStreamState(
+			this.options.stdout as MaybeWritableStream,
+		).canWriteToStdout;
+		settleThrottle(this.throttledOnRender, canWriteToStdout);
+		settleThrottle(this.throttledLog, canWriteToStdout);
+		for (const action of this.deferredWidthLifecycleActions.splice(0)) {
+			settleThrottle(this.throttledLog, canWriteToStdout);
+			action();
+		}
+	}
+
+	private isTerminalResponsePending(): boolean {
+		return Boolean(this.widthDetection?.pending || this.cancelKittyDetection);
+	}
+
+	private handleInputReady(
+		ready: boolean,
+		resumePendingInput?: () => void,
+		afterSettlement?: () => void,
+	): void {
+		this.rawInputReady = ready;
+		if (!ready) {
+			const finishInputRelease = () => {
+				this.cancelKittyDetection?.();
+				this.resumePendingInput = undefined;
+				afterSettlement?.();
+			};
+			if (this.deferUntilExplicitWidthSettlement(finishInputRelease)) return;
+			finishInputRelease();
+			return;
+		}
+		if (this.isUnmounted || this.isUnmounting) return;
+		this.resumePendingInput = resumePendingInput;
+		this.widthDetection?.setInputReady(true);
+		if (
+			this.kittyAutoFlags &&
+			!this.kittyQuerySent &&
+			this.cancelKittyDetection
+		) {
+			this.kittyQuerySent = true;
+			try {
+				this.options.stdout.write('\u001B[?u');
+			} catch {
+				this.cancelKittyDetection?.();
+			}
+		}
+	}
+
+	private handleTerminalResponse(response: TerminalResponse): void {
+		if (response.type === 'cursor-position') {
+			this.widthDetection?.accept(response);
+			return;
+		}
+		if (
+			this.kittyQuerySent &&
+			this.kittyAutoFlags &&
+			this.cancelKittyDetection
+		) {
+			const flags = this.kittyAutoFlags;
+			this.cancelKittyDetection();
+			if (!this.isUnmounted && !this.isUnmounting)
+				this.enableKittyProtocol(flags);
+		}
+	}
+
 	private initKittyKeyboard(): void {
 		// Protocol is opt-in: if kittyKeyboard is not specified, do nothing
 		if (!this.options.kittyKeyboard) {
@@ -1308,55 +1472,19 @@ export default class Ink {
 			return;
 		}
 
-		// Auto mode: query the terminal for kitty keyboard protocol support.
-		// The CSI ? u query is safe to send to any terminal — unsupporting
-		// terminals simply won't respond, and the 200ms timeout handles that.
-		// This avoids maintaining a hardcoded whitelist of terminal names.
-		this.confirmKittySupport(flags);
-	}
-
-	private confirmKittySupport(flags: KittyFlagName[]): void {
-		const {stdin, stdout} = this.options;
-
-		let responseBuffer: number[] = [];
-
+		if (this.options.debug || this.isScreenReaderEnabled) return;
+		// Replies flow through App's one readable parser, without input replay.
+		this.kittyAutoFlags = flags;
 		const cleanup = (): void => {
-			this.cancelKittyDetection = undefined;
 			clearTimeout(timer);
-			stdin.removeListener('data', onData);
-
-			// Re-emit any buffered data that wasn't the protocol response,
-			// so it isn't lost from Ink's normal input pipeline.
-			// Clear responseBuffer afterwards to make cleanup idempotent.
-			const remaining =
-				stripKittyQueryResponsesAndTrailingPartial(responseBuffer);
-			responseBuffer = [];
-			if (remaining.length > 0) {
-				stdin.unshift(Uint8Array.from(remaining));
-			}
+			this.cancelKittyDetection = undefined;
+			this.kittyAutoFlags = undefined;
+			this.resumePendingInput?.();
 		};
-
-		const onData = (data: Uint8Array | string): void => {
-			const chunk = typeof data === 'string' ? textEncoder.encode(data) : data;
-			for (const byte of chunk) {
-				responseBuffer.push(byte);
-			}
-
-			if (hasCompleteKittyQueryResponse(responseBuffer)) {
-				cleanup();
-				if (!this.isUnmounted) {
-					this.enableKittyProtocol(flags);
-				}
-			}
-		};
-
-		// Attach listener before writing the query so that synchronous
-		// or immediate responses are not missed.
-		stdin.on('data', onData);
 		const timer = setTimeout(cleanup, 200);
 		this.cancelKittyDetection = cleanup;
-
-		stdout.write('\u001B[?u');
+		if (this.rawInputReady)
+			this.handleInputReady(true, this.resumePendingInput);
 	}
 
 	private enableKittyProtocol(flags: KittyFlagName[]): void {

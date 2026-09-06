@@ -3053,6 +3053,35 @@ You can even inspect and change the props of components, and see the results imm
 > [!NOTE]
 > You must manually quit your CLI via <kbd>Ctrl</kbd>+<kbd>C</kbd> after you're done testing.
 
+## Explicit terminal widths
+
+Ink automatically negotiates [OSC 66 explicit grapheme widths](https://sw.kovidgoyal.net/kitty/text-sizing-protocol/) for eligible interactive terminals. When supported, Ink tells the terminal how many cells each eligible original grapheme occupies. Layout, wrapping, selection, and copy text remain unchanged.
+
+Detection requires TTY output and a readable, raw-capable TTY input owned by an Ink input hook. A single 200 ms window starts with the first nonempty frame, including time spent waiting for raw-input readiness. Ink asks for private cursor-position reports, verifies column 1, and draws only in a cell reserved for its first frame. It does not home the cursor or add a probe newline. No reply, unsupported OSC 66, an unsafe initial position, or interrupted startup falls back to ordinary output. A terminal that ignores private cursor reports also falls back, even if it otherwise supports OSC 66.
+
+During that window, dynamic updates coalesce to the latest pending frame; Static additions are retained in order. Disable explicit-width negotiation when every intermediate startup frame must be emitted immediately.
+
+Redirected, noninteractive, debug, and screen-reader output skip detection and encoding. External stdout/stderr writes are not encoded. Ink-managed external writes, resize, clear, raw-input release, and unmount cancel pending detection safely. Use exclusive terminal-stream ownership during negotiation; unrelated direct writes or other consumers of physical stdin are outside Ink's input/output ownership. A fresh Ink instance negotiates again; there is no separate suspend/resume negotiation API.
+
+To disable detection and encoding:
+
+```jsx
+render(<MyApp />, {explicitWidth: 'disabled'});
+```
+
+The default is `explicitWidth: 'auto'`. Environment overrides are captured once per instance:
+
+```sh
+INK_EXPLICIT_WIDTH=0 my-cli  # Disable detection and encoding
+INK_EXPLICIT_WIDTH=1 my-cli  # Force encoding without a probe (verified terminals only)
+```
+
+An explicit `explicitWidth: 'disabled'` option overrides both environment settings. With the variable unset (or another value), automatic detection is used.
+
+**Forcing `1` does not detect terminal support. Unsupported terminals may hide wrapped non-ASCII text.** Automatic fallback avoids that risk, but does not fix the original width disagreements on unsupported terminals.
+
+Automated negotiation and parser tests use synthetic streams; passing them does not prove physical glyph width or copy behavior in a terminal emulator. Validate encoded rendering in a real foreground terminal before treating a terminal as supported.
+
 ## Screen Reader Support
 
 Ink has basic support for screen readers.

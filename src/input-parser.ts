@@ -246,6 +246,15 @@ const parseKeypresses = (input: string): ParsedInput => {
 	};
 };
 
+export type TerminalResponse =
+	| {type: 'cursor-position'; row: number; column: number}
+	| {type: 'kitty-keyboard'; flags: number};
+
+type InputParserOptions = {
+	onTerminalResponse?: (response: TerminalResponse) => void;
+	isTerminalResponsePending?: () => boolean;
+};
+
 export type InputParser = {
 	push: (chunk: string) => InputEvent[];
 	hasPendingEscape: () => boolean;
@@ -253,26 +262,105 @@ export type InputParser = {
 	reset: () => void;
 };
 
-export const createInputParser = (): InputParser => {
+const maxTerminalResponseLength = 64;
+const privateResponsePrefix = /^\u001B\[\?\d[\d;]*$/;
+
+export const createInputParser = ({
+	onTerminalResponse,
+	isTerminalResponsePending,
+}: InputParserOptions = {}): InputParser => {
 	let pending = '';
+	let discardingPrivateResponse = false;
+	const holdTerminalPrefix = (): boolean =>
+		Boolean(onTerminalResponse) &&
+		(privateResponsePrefix.test(pending) ||
+			(Boolean(isTerminalResponsePending?.()) &&
+				(pending === escape ||
+					pending === `${escape}[` ||
+					pending === `${escape}[?`)));
 
 	return {
 		push(chunk) {
-			const parsedInput = parseKeypresses(pending + chunk);
+			let input = chunk;
+			if (discardingPrivateResponse) {
+				let end = 0;
+				while (
+					end < input.length &&
+					(isCsiParameterByte(input.charCodeAt(end)) ||
+						isCsiIntermediateByte(input.charCodeAt(end)))
+				)
+					end++;
+				if (end === input.length) return [];
+				// Drain only the malformed response, not a new escape or Ctrl+C.
+				const terminator = input[end];
+				input = input.slice(
+					end + (terminator === 'R' || terminator === 'u' ? 1 : 0),
+				);
+				discardingPrivateResponse = false;
+			}
+			if (
+				onTerminalResponse &&
+				privateResponsePrefix.test(pending) &&
+				isTerminalResponsePending &&
+				!isTerminalResponsePending() &&
+				input &&
+				!/[\d;Ru]/.test(input[0]!)
+			) {
+				// Once startup has expired, an unmistakable new key must not be
+				// attached to a truncated terminal reply. Valid late tails still drain.
+				pending = '';
+			}
+			const parsedInput = parseKeypresses(pending + input);
 			pending = parsedInput.pending;
-			return parsedInput.events;
+			if (!onTerminalResponse) return parsedInput.events;
+			if (
+				pending.length > maxTerminalResponseLength &&
+				privateResponsePrefix.test(pending)
+			) {
+				pending = '';
+				discardingPrivateResponse = true;
+			}
+			return parsedInput.events.filter(event => {
+				// Paste is an opaque application event, even when it contains replies.
+				if (typeof event !== 'string') return true;
+				const cursor = /^\u001B\[\?(\d+);(\d+)R$/.exec(event);
+				if (cursor) {
+					if (event.length > maxTerminalResponseLength) return false;
+					const row = Number(cursor[1]);
+					const column = Number(cursor[2]);
+					if (
+						Number.isSafeInteger(row) &&
+						row > 0 &&
+						Number.isSafeInteger(column) &&
+						column > 0
+					) {
+						onTerminalResponse({type: 'cursor-position', row, column});
+					}
+					return false;
+				}
+				const kitty = /^\u001B\[\?(\d+)u$/.exec(event);
+				if (kitty) {
+					if (event.length > maxTerminalResponseLength) return false;
+					const flags = Number(kitty[1]);
+					if (Number.isSafeInteger(flags))
+						onTerminalResponse({type: 'kitty-keyboard', flags});
+					return false;
+				}
+				return true;
+			});
 		},
 		hasPendingEscape() {
 			// Don't trigger the escape flush timer while assembling a paste start
 			// marker (`\u001B[200` and then `~`) or while waiting for paste end.
 			return (
 				pending.startsWith(escape) &&
+				!holdTerminalPrefix() &&
 				!pending.startsWith(pasteStart) &&
 				pending !== '\u001B[200'
 			);
 		},
 		flushPendingEscape() {
-			if (!pending.startsWith(escape)) {
+			if (!pending.startsWith(escape) || holdTerminalPrefix()) {
 				return undefined;
 			}
 
@@ -282,6 +370,7 @@ export const createInputParser = (): InputParser => {
 		},
 		reset() {
 			pending = '';
+			discardingPrivateResponse = false;
 		},
 	};
 };

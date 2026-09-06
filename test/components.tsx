@@ -879,8 +879,9 @@ test('render only last frame when run in CI', async t => {
 
 test('render all frames if CI environment variable equals false', async t => {
 	const output = await run('ci', {
+		// Test CI's frame policy, not the capability window's initial coalescing.
 		// eslint-disable-next-line @typescript-eslint/naming-convention
-		env: {CI: 'false'},
+		env: {CI: 'false', INK_EXPLICIT_WIDTH: '0'},
 		columns: 0,
 	});
 
