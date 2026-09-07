@@ -26,6 +26,19 @@ const recordSurfaceWrite = (node: DOMElement, cellWidth: number): void => {
 		(node.internal_lastSurfaceCellCount ?? 0) + cellWidth;
 };
 
+const findAncestorBackgroundColor = (node: DOMNode): string | undefined => {
+	let current = node.parentNode;
+	while (current) {
+		if (current.style.backgroundColor) {
+			return current.style.backgroundColor;
+		}
+
+		current = current.parentNode;
+	}
+
+	return undefined;
+};
+
 /* eslint-disable max-params -- visibleRect and stylePiece edge args */
 const renderBorder = (
 	x: number,
@@ -51,22 +64,24 @@ const renderBorder = (
 		const rightBorderColor =
 			node.style.borderRightColor ?? node.style.borderColor;
 
+		const fallbackBackgroundColor =
+			node.style.backgroundColor ?? findAncestorBackgroundColor(node);
 		const topBorderBackgroundColor =
 			node.style.borderTopBackgroundColor ??
 			node.style.borderBackgroundColor ??
-			node.style.backgroundColor;
+			fallbackBackgroundColor;
 		const bottomBorderBackgroundColor =
 			node.style.borderBottomBackgroundColor ??
 			node.style.borderBackgroundColor ??
-			node.style.backgroundColor;
+			fallbackBackgroundColor;
 		const leftBorderBackgroundColor =
 			node.style.borderLeftBackgroundColor ??
 			node.style.borderBackgroundColor ??
-			node.style.backgroundColor;
+			fallbackBackgroundColor;
 		const rightBorderBackgroundColor =
 			node.style.borderRightBackgroundColor ??
 			node.style.borderBackgroundColor ??
-			node.style.backgroundColor;
+			fallbackBackgroundColor;
 
 		const dimTopBorderColor =
 			node.style.borderTopDimColor ?? node.style.borderDimColor;

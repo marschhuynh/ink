@@ -136,6 +136,75 @@ test('border uses box background color when borderBackgroundColor is omitted', t
 	t.true(topBorder.includes('\u001B[36m'));
 });
 
+test('border inherits ancestor background when own background is omitted', t => {
+	const output = renderToString(
+		<Box backgroundColor="blue" alignSelf="flex-start">
+			<Box
+				borderBottom={false}
+				borderColor="white"
+				borderRight={false}
+				borderStyle="single"
+				borderTop={false}
+			>
+				<Text>Hi</Text>
+			</Box>
+		</Box>,
+	);
+
+	const railLine = output.split('\n').find(line => line.includes('│'));
+	t.truthy(railLine);
+	// Named blue background must be active on the border glyph itself. Text
+	// already inherits via backgroundContext; without this, `│` punches a hole.
+	const railPrefix = railLine!.slice(0, railLine!.indexOf('│'));
+	t.true(railPrefix.includes('\u001B[44m'));
+});
+
+test('border inherits background through transparent intermediate boxes', t => {
+	const output = renderToString(
+		<Box backgroundColor="blue" alignSelf="flex-start">
+			<Box>
+				<Box
+					borderBottom={false}
+					borderColor="white"
+					borderRight={false}
+					borderStyle="single"
+					borderTop={false}
+				>
+					<Text>Hi</Text>
+				</Box>
+			</Box>
+		</Box>,
+	);
+
+	const railLine = output.split('\n').find(line => line.includes('│'));
+	t.truthy(railLine);
+	const railPrefix = railLine!.slice(0, railLine!.indexOf('│'));
+	t.true(railPrefix.includes('\u001B[44m'));
+});
+
+test('own box background wins over ancestor background on the border', t => {
+	const output = renderToString(
+		<Box backgroundColor="blue" alignSelf="flex-start">
+			<Box
+				backgroundColor="red"
+				borderBottom={false}
+				borderColor="white"
+				borderRight={false}
+				borderStyle="single"
+				borderTop={false}
+			>
+				<Text>Hi</Text>
+			</Box>
+		</Box>,
+	);
+
+	const railLine = output.split('\n').find(line => line.includes('│'));
+	t.truthy(railLine);
+	// Named red background => ESC[41m. Must be on the glyph, not only on text.
+	const railPrefix = railLine!.slice(0, railLine!.indexOf('│'));
+	t.true(railPrefix.includes('\u001B[41m'));
+});
+
 test('foreground, background and dim combine correctly', t => {
 	const output = renderToString(
 		<Box
