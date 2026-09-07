@@ -77,6 +77,8 @@ export type RenderOptions = {
 	Enable incremental rendering mode which only updates changed lines instead of redrawing the entire output.
 	This can reduce flickering and improve performance for frequently updating UIs.
 
+	When OSC 66 is unavailable, fullscreen incremental frames (dynamic height equal to the terminal row count) may use allocated seek painting instead of raw output. Inline frames, Static output, and non-fullscreen heights keep the existing raw path. See `explicitWidth`.
+
 	@default false
 	*/
 	incrementalRendering?: boolean;
@@ -107,6 +109,9 @@ export type RenderOptions = {
 	/**
 	Automatically negotiate OSC 66 explicit text widths for eligible interactive terminals.
 	Set to `disabled` to skip detection and override the manual environment switch.
+
+	When OSC 66 is not confirmed, eligible fullscreen incremental frames may use an allocated seek row writer instead of raw output. `explicitWidth: 'disabled'` and `INK_EXPLICIT_WIDTH=0` disable that fallback too. `INK_EXPLICIT_WIDTH=1` still forces OSC 66 encoding without a probe.
+
 	@default 'auto'
 	*/
 	explicitWidth?: 'auto' | 'disabled';

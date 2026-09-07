@@ -12,8 +12,21 @@ import {
 	hideCursorEscape,
 	showCursorEscape,
 } from './cursor-helpers.js';
+import {createSeekPreparer} from './allocated-seek.js';
+import {
+	type PaintContext,
+	type PhysicalFrame,
+	isSeekViewport,
+	clampSeekCursor,
+	buildSeekCursorSequence,
+	encodeSeekRows,
+	wrapSeekPaint,
+	decawmOn,
+	eraseDisplayHome,
+} from './terminal-paint.js';
 
 export type {CursorPosition} from './cursor-helpers.js';
+export type {PaintContext, PhysicalFrame} from './terminal-paint.js';
 
 type EraseOptions = {
 	eraseLineCount?: number;
@@ -31,13 +44,19 @@ type CreateOptions = OutputOptions & {
 export type LogUpdate = {
 	clear: (options?: EraseOptions) => void;
 	done: () => void;
-	repaint: (str: string, options?: EraseOptions) => boolean;
+	repaint: (
+		str: string,
+		options?: EraseOptions,
+		context?: PaintContext,
+	) => boolean;
 	reset: () => void;
-	sync: (str: string) => void;
+	sync: (str: string, physical?: PhysicalFrame) => void;
 	setCursorPosition: (position: CursorPosition | undefined) => void;
 	isCursorDirty: () => boolean;
-	willRender: (str: string) => boolean;
-	(str: string): boolean;
+	willRender: (str: string, context?: PaintContext) => boolean;
+	getPhysicalFrame: () => PhysicalFrame | undefined;
+	restoreTerminalModes: () => void;
+	(str: string, context?: PaintContext): boolean;
 };
 
 // Count visible lines in a string, ignoring the trailing empty element
@@ -277,9 +296,13 @@ const createStandard = (
 		return true;
 	};
 
-	const render = (str: string) => writeFrame(str, false);
-	render.repaint = (str: string, options?: EraseOptions) =>
-		writeFrame(str, true, options);
+	const render = (str: string, _context?: PaintContext) =>
+		writeFrame(str, false);
+	render.repaint = (
+		str: string,
+		options?: EraseOptions,
+		_context?: PaintContext,
+	) => writeFrame(str, true, options);
 
 	render.clear = (options?: EraseOptions) => {
 		const prefix = buildReturnToBottomPrefix(
@@ -330,7 +353,7 @@ const createStandard = (
 		cursorDirty = false;
 	};
 
-	render.sync = (str: string) => {
+	render.sync = (str: string, _physical?: PhysicalFrame) => {
 		const activeCursor = cursorPosition;
 		cursorDirty = false;
 
@@ -356,7 +379,12 @@ const createStandard = (
 	};
 
 	render.isCursorDirty = () => cursorDirty;
-	render.willRender = (str: string) => hasChanges(str, getActiveCursor());
+	render.willRender = (str: string, _context?: PaintContext) =>
+		hasChanges(str, getActiveCursor());
+	render.getPhysicalFrame = () => undefined;
+	render.restoreTerminalModes = () => {
+		// Standard rendering never acquires seek terminal modes.
+	};
 
 	return render;
 };
@@ -372,6 +400,14 @@ const createIncremental = (
 	let cursorDirty = false;
 	let previousCursorPosition: CursorPosition | undefined;
 	let cursorWasShown = false;
+	let physicalFrame: PhysicalFrame | undefined;
+	let previousIdentities: readonly string[] = [];
+	let ownsDecawm = false;
+	let writeGeneration = 0;
+	let paintedSeekViewport = false;
+	const seekPreparer = createSeekPreparer();
+	let streamErrorHandler: ((error: Error) => void) | undefined;
+	let handlingAsyncWriteError = false;
 
 	const getActiveCursor = () => cursorPosition;
 	const hasChanges = (
@@ -385,7 +421,288 @@ const createIncremental = (
 		return str !== previousOutput || cursorChanged;
 	};
 
-	const render = (str: string) => {
+	const bumpGeneration = () => {
+		writeGeneration++;
+	};
+
+	const invalidatePhysical = () => {
+		if (physicalFrame === undefined) {
+			return;
+		}
+
+		physicalFrame = {
+			...physicalFrame,
+			valid: false,
+			ownsViewport: false,
+		};
+	};
+
+	const canWriteStream = (): boolean => {
+		const candidate = stream as Writable & {
+			destroyed?: boolean;
+			writableEnded?: boolean;
+			writable?: boolean;
+		};
+		return (
+			!candidate.destroyed &&
+			!candidate.writableEnded &&
+			(candidate.writable ?? true)
+		);
+	};
+
+	const restoreTerminalModes = () => {
+		if (!ownsDecawm) {
+			return;
+		}
+
+		if (canWriteStream()) {
+			try {
+				stream.write(decawmOn);
+			} catch {
+				// Best-effort autowrap restore.
+			}
+		}
+
+		ownsDecawm = false;
+	};
+
+	const handleAsyncWriteError = () => {
+		if (handlingAsyncWriteError) {
+			return;
+		}
+
+		handlingAsyncWriteError = true;
+		bumpGeneration();
+		invalidatePhysical();
+		previousIdentities = [];
+		previousOutput = '';
+		previousLines = [];
+		// A queued successful write can establish the next ordered diff base,
+		// but an async error invalidates it; it is not proof that a terminal
+		// displayed the frame.
+		if (paintedSeekViewport) {
+			ownsDecawm = true;
+		}
+
+		restoreTerminalModes();
+	};
+
+	const detachStreamErrorListener = () => {
+		if (!streamErrorHandler) {
+			return;
+		}
+
+		stream.off('error', streamErrorHandler);
+		streamErrorHandler = undefined;
+	};
+
+	const attachStreamErrorListener = () => {
+		if (streamErrorHandler) {
+			return;
+		}
+
+		streamErrorHandler = () => {
+			handleAsyncWriteError();
+		};
+
+		stream.on('error', streamErrorHandler);
+	};
+
+	const copyContext = (context: PaintContext): PaintContext => ({
+		strategy: context.strategy,
+		columns: context.columns,
+		rows: context.rows,
+	});
+
+	const seekHasChanges = (
+		str: string,
+		context: PaintContext,
+		activeCursor: CursorPosition | undefined,
+	): boolean => {
+		if (
+			physicalFrame === undefined ||
+			!physicalFrame.valid ||
+			physicalFrame.context.strategy !== context.strategy ||
+			physicalFrame.context.columns !== context.columns ||
+			physicalFrame.context.rows !== context.rows ||
+			str !== previousOutput
+		) {
+			return true;
+		}
+
+		return cursorPositionChanged(activeCursor, previousCursorPosition);
+	};
+
+	const submitSeekWrite = (
+		payload: string,
+		{
+			decawm,
+			onAccept,
+		}: {
+			decawm: boolean;
+			onAccept: () => void;
+		},
+	): boolean => {
+		const generation = ++writeGeneration;
+		handlingAsyncWriteError = false;
+		if (decawm) {
+			ownsDecawm = true;
+			// Seek cells may already be on the stream; keep teardown ownership
+			// through throw/reentry. Physical/diff still publish only on accept.
+			paintedSeekViewport = true;
+		}
+
+		attachStreamErrorListener();
+
+		try {
+			stream.write(payload, error => {
+				if (error) {
+					handleAsyncWriteError();
+				}
+			});
+			if (decawm) {
+				ownsDecawm = false;
+			}
+
+			// A queued successful write can establish the next ordered diff base,
+			// but an async error invalidates it; it is not proof that a terminal
+			// displayed the frame.
+			if (generation === writeGeneration) {
+				onAccept();
+			}
+
+			return true;
+		} catch (error) {
+			invalidatePhysical();
+			previousIdentities = [];
+			previousOutput = '';
+			previousLines = [];
+			if (decawm) {
+				ownsDecawm = true;
+			}
+
+			restoreTerminalModes();
+			throw error;
+		}
+	};
+
+	const writeSeekFrame = (
+		str: string,
+		context: PaintContext,
+		force: boolean,
+	): boolean => {
+		const activeCursor = getActiveCursor();
+		cursorDirty = false;
+
+		if (!force && !seekHasChanges(str, context, activeCursor)) {
+			return false;
+		}
+
+		const cursorChanged = cursorPositionChanged(
+			activeCursor,
+			previousCursorPosition,
+		);
+		const dimensionsChanged =
+			physicalFrame === undefined ||
+			!physicalFrame.valid ||
+			physicalFrame.context.columns !== context.columns ||
+			physicalFrame.context.rows !== context.rows ||
+			physicalFrame.context.strategy !== context.strategy;
+
+		if (
+			!force &&
+			!dimensionsChanged &&
+			str === previousOutput &&
+			cursorChanged
+		) {
+			const payload = buildSeekCursorSequence(
+				activeCursor,
+				context.columns,
+				context.rows,
+				cursorWasShown,
+			);
+			return submitSeekWrite(payload, {
+				decawm: false,
+				onAccept() {
+					previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
+					cursorWasShown = activeCursor !== undefined;
+					if (physicalFrame?.valid) {
+						physicalFrame = {
+							...physicalFrame,
+							cursor: clampSeekCursor(
+								activeCursor,
+								context.columns,
+								context.rows,
+							),
+						};
+					}
+				},
+			});
+		}
+
+		const prepared = seekPreparer.prepareFrame(str, context.columns);
+		const viewportCount = Math.min(prepared.length, context.rows);
+		const viewportPrepared = prepared.slice(0, viewportCount);
+		const paintAll = force || dimensionsChanged;
+		const indexes: number[] = [];
+		if (paintAll) {
+			for (let index = 0; index < viewportCount; index++) {
+				indexes.push(index);
+			}
+		} else {
+			for (let index = 0; index < viewportCount; index++) {
+				if (viewportPrepared[index]!.identity !== previousIdentities[index]) {
+					indexes.push(index);
+				}
+			}
+		}
+
+		const encodedRows = encodeSeekRows(
+			viewportPrepared,
+			indexes,
+			context.columns,
+		);
+		const cursorSuffix = buildSeekCursorSequence(
+			activeCursor,
+			context.columns,
+			context.rows,
+			cursorWasShown,
+		);
+		const payload =
+			encodedRows.length > 0
+				? wrapSeekPaint(encodedRows + cursorSuffix)
+				: cursorSuffix;
+
+		if (payload.length === 0) {
+			return false;
+		}
+
+		return submitSeekWrite(payload, {
+			decawm: encodedRows.length > 0,
+			onAccept() {
+				previousOutput = str;
+				previousLines = str.split('\n');
+				previousIdentities = viewportPrepared.map(row => row.identity);
+				previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
+				cursorWasShown = activeCursor !== undefined;
+				paintedSeekViewport = true;
+				physicalFrame = {
+					context: copyContext(context),
+					ownsViewport: true,
+					valid: true,
+					logicalRows: viewportPrepared.map(row => row.logical),
+					allocatedWidths: viewportPrepared.map(row => row.allocatedWidth),
+					cursor: clampSeekCursor(activeCursor, context.columns, context.rows),
+				};
+			},
+		});
+	};
+
+	const render = (str: string, context?: PaintContext) => {
+		if (isSeekViewport(context)) {
+			return writeSeekFrame(str, context, false);
+		}
+
 		if (!showCursor && !hasHiddenCursor) {
 			cliCursor.hide(stream);
 			hasHiddenCursor = true;
@@ -536,7 +853,15 @@ const createIncremental = (
 		return true;
 	};
 
-	render.repaint = (str: string, options?: EraseOptions) => {
+	render.repaint = (
+		str: string,
+		options?: EraseOptions,
+		context?: PaintContext,
+	) => {
+		if (isSeekViewport(context)) {
+			return writeSeekFrame(str, context, true);
+		}
+
 		if (!showCursor && !hasHiddenCursor) {
 			cliCursor.hide(stream);
 			hasHiddenCursor = true;
@@ -569,7 +894,26 @@ const createIncremental = (
 		return true;
 	};
 
+	const clearSeekState = () => {
+		previousOutput = '';
+		previousLines = [];
+		previousIdentities = [];
+		previousCursorPosition = undefined;
+		cursorWasShown = false;
+		cursorDirty = false;
+		paintedSeekViewport = false;
+		invalidatePhysical();
+	};
+
 	render.clear = (options?: EraseOptions) => {
+		bumpGeneration();
+		restoreTerminalModes();
+		if (paintedSeekViewport) {
+			stream.write(eraseDisplayHome);
+			clearSeekState();
+			return;
+		}
+
 		const prefix = buildReturnToBottomPrefix(
 			cursorWasShown,
 			previousLines.length,
@@ -581,52 +925,96 @@ const createIncremental = (
 					getEraseLineCount(previousLines.length, options),
 				),
 		);
-		previousOutput = '';
-		previousLines = [];
-		previousCursorPosition = undefined;
-		cursorWasShown = false;
-		cursorDirty = false;
+		clearSeekState();
 	};
 
 	render.done = () => {
-		const returnPrefix = buildReturnToBottomPrefix(
-			cursorWasShown,
-			previousLines.length,
-			previousCursorPosition,
-		);
-		if (returnPrefix || showCursor) {
-			stream.write(returnPrefix + (showCursor ? showCursorEscape : ''));
-		}
+		bumpGeneration();
+		restoreTerminalModes();
+		detachStreamErrorListener();
+		try {
+			if (paintedSeekViewport) {
+				if (showCursor) {
+					stream.write(showCursorEscape);
+				}
 
-		previousOutput = '';
-		previousLines = [];
-		previousCursorPosition = undefined;
-		cursorWasShown = false;
-		cursorPosition = undefined;
-		cursorDirty = false;
+				clearSeekState();
+				cursorPosition = undefined;
+				if (!showCursor) {
+					cliCursor.show(stream);
+					hasHiddenCursor = false;
+				}
 
-		if (!showCursor) {
-			cliCursor.show(stream);
-			hasHiddenCursor = false;
+				return;
+			}
+
+			const returnPrefix = buildReturnToBottomPrefix(
+				cursorWasShown,
+				previousLines.length,
+				previousCursorPosition,
+			);
+			if (returnPrefix || showCursor) {
+				stream.write(returnPrefix + (showCursor ? showCursorEscape : ''));
+			}
+
+			clearSeekState();
+			cursorPosition = undefined;
+
+			if (!showCursor) {
+				cliCursor.show(stream);
+				hasHiddenCursor = false;
+			}
+		} catch {
+			clearSeekState();
+			cursorPosition = undefined;
 		}
 	};
 
 	render.reset = () => {
 		// Cache-only: the caller must have externally reset or replaced terminal contents.
+		bumpGeneration();
 		previousOutput = '';
 		previousLines = [];
+		previousIdentities = [];
 		previousCursorPosition = undefined;
 		cursorWasShown = false;
 		cursorDirty = false;
+		invalidatePhysical();
 	};
 
-	render.sync = (str: string) => {
+	render.sync = (str: string, physical?: PhysicalFrame) => {
 		const activeCursor = cursorPosition;
 		cursorDirty = false;
 
 		const lines = str.split('\n');
 		previousOutput = str;
 		previousLines = lines;
+
+		const matching =
+			physical?.valid === true &&
+			physical.ownsViewport &&
+			physical.context.strategy === 'seek-viewport' &&
+			physical.logicalRows.join('\n') === str;
+
+		if (matching && physical) {
+			physicalFrame = {
+				context: copyContext(physical.context),
+				ownsViewport: true,
+				valid: true,
+				logicalRows: physical.logicalRows,
+				allocatedWidths: physical.allocatedWidths,
+				cursor: physical.cursor,
+			};
+			previousIdentities = [];
+			paintedSeekViewport = true;
+			previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
+			cursorWasShown = activeCursor !== undefined;
+			return;
+		}
+
+		previousIdentities = [];
+		paintedSeekViewport = false;
+		invalidatePhysical();
 
 		if (!activeCursor && cursorWasShown) {
 			stream.write(hideCursorEscape);
@@ -646,7 +1034,16 @@ const createIncremental = (
 	};
 
 	render.isCursorDirty = () => cursorDirty;
-	render.willRender = (str: string) => hasChanges(str, getActiveCursor());
+	render.willRender = (str: string, context?: PaintContext) => {
+		if (isSeekViewport(context)) {
+			return seekHasChanges(str, context, getActiveCursor());
+		}
+
+		return hasChanges(str, getActiveCursor());
+	};
+
+	render.getPhysicalFrame = () => physicalFrame;
+	render.restoreTerminalModes = restoreTerminalModes;
 
 	return render;
 };

@@ -3057,13 +3057,13 @@ You can even inspect and change the props of components, and see the results imm
 
 Ink automatically negotiates [OSC 66 explicit grapheme widths](https://sw.kovidgoyal.net/kitty/text-sizing-protocol/) for eligible interactive terminals. When supported, Ink tells the terminal how many cells each eligible original grapheme occupies. Layout, wrapping, selection, and copy text remain unchanged.
 
-Detection requires TTY output and a readable, raw-capable TTY input owned by an Ink input hook. A single 200 ms window starts with the first nonempty frame, including time spent waiting for raw-input readiness. Ink asks for private cursor-position reports, verifies column 1, and draws only in a cell reserved for its first frame. It does not home the cursor or add a probe newline. No reply, unsupported OSC 66, an unsafe initial position, or interrupted startup falls back to ordinary output. A terminal that ignores private cursor reports also falls back, even if it otherwise supports OSC 66.
+Detection requires TTY output and a readable, raw-capable TTY input owned by an Ink input hook. A single 200 ms window starts with the first nonempty frame, including time spent waiting for raw-input readiness. Ink asks for private cursor-position reports, verifies column 1, and draws only in a cell reserved for its first frame. It does not home the cursor or add a probe newline. No reply, unsupported OSC 66, an unsafe initial position, or interrupted startup leaves OSC 66 unused. Eligible fullscreen incremental frames then use the allocated seek fallback below; other frames keep ordinary output. A terminal that ignores private cursor reports also skips OSC 66, even if it otherwise supports it.
 
 During that window, dynamic updates coalesce to the latest pending frame; Static additions are retained in order. Disable explicit-width negotiation when every intermediate startup frame must be emitted immediately.
 
 Redirected, noninteractive, debug, and screen-reader output skip detection and encoding. External stdout/stderr writes are not encoded. Ink-managed external writes, resize, clear, raw-input release, and unmount cancel pending detection safely. Use exclusive terminal-stream ownership during negotiation; unrelated direct writes or other consumers of physical stdin are outside Ink's input/output ownership. A fresh Ink instance negotiates again; there is no separate suspend/resume negotiation API.
 
-To disable detection and encoding:
+To disable detection, OSC 66 encoding, and the seek fallback:
 
 ```jsx
 render(<MyApp />, {explicitWidth: 'disabled'});
@@ -3072,15 +3072,36 @@ render(<MyApp />, {explicitWidth: 'disabled'});
 The default is `explicitWidth: 'auto'`. Environment overrides are captured once per instance:
 
 ```sh
-INK_EXPLICIT_WIDTH=0 my-cli  # Disable detection and encoding
-INK_EXPLICIT_WIDTH=1 my-cli  # Force encoding without a probe (verified terminals only)
+INK_EXPLICIT_WIDTH=0 my-cli  # Disable detection, OSC 66 encoding, and the seek fallback
+INK_EXPLICIT_WIDTH=1 my-cli  # Force OSC 66 encoding without a probe (verified terminals only)
 ```
 
-An explicit `explicitWidth: 'disabled'` option overrides both environment settings. With the variable unset (or another value), automatic detection is used.
+An explicit `explicitWidth: 'disabled'` option overrides both environment settings. With the variable unset (or another value), automatic detection is used. Force-on and force-off precedence is unchanged: `INK_EXPLICIT_WIDTH=1` still selects OSC 66 on an eligible TTY, and both the option and `INK_EXPLICIT_WIDTH=0` skip the new path too.
 
-**Forcing `1` does not detect terminal support. Unsupported terminals may hide wrapped non-ASCII text.** Automatic fallback avoids that risk, but does not fix the original width disagreements on unsupported terminals.
+**Forcing `1` does not detect terminal support. Unsupported terminals may hide wrapped non-ASCII text.** Automatic OSC 66 fallback avoids that risk. It does not by itself fix width disagreements; the seek path below is a separate, bounded fallback.
 
-Automated negotiation and parser tests use synthetic streams; passing them does not prove physical glyph width or copy behavior in a terminal emulator. Validate encoded rendering in a real foreground terminal before treating a terminal as supported.
+### Allocated seek fallback
+
+When OSC 66 is not confirmed, Ink can keep fullscreen incremental frames on their allocated cell grid by seeking to each changed row and prefilling non-ASCII graphemes. Layout, wrapping, Ink-managed selection, and original copy text remain unchanged.
+
+Seek painting is used only when all of the following hold at actual write time:
+
+- `incrementalRendering: true`
+- interactive TTY output
+- debug and screen-reader modes are off
+- the dynamic frame height equals the current terminal row count
+
+Inline incremental frames, frames shorter or taller than the viewport, Static output, redirected/noninteractive/debug/screen-reader output, and ordinary stdout/stderr writes keep the existing raw path. OSC 66 success and `INK_EXPLICIT_WIDTH=1` still take precedence on eligible TTYs.
+
+Seeking can restore allocated cursor positions and overwrite excess paint. It cannot make an unsupported terminal shape a ZWJ sequence into one glyph. Split, clipped, incomplete, or erased portions of that glyph are accepted limits; damage to neighboring content or unintended row movement is not. Ink-managed copy still reads original grid text. Native terminal copy reads cells that may have been overwritten, so exact native copy is not guaranteed.
+
+Seek frames skip the existing scroll-region shift optimization. Unchanged rows are still skipped. Extra absolute seeks, styled prefills, and full-viewport resize repaints are intentional costs, not a performance claim.
+
+Before restoring a fullscreen seek frame after ordinary or Static output, Ink advances a blank viewport so that output can move into primary-screen history rather than being immediately overwritten at home. That conservative first version may add extra blank lines to primary-screen history around external output.
+
+Physical terminal acceptance for this fallback is still pending. Completing source tests does not qualify a terminal. A failed OSC 66 probe does not by itself establish seek support.
+
+Automated negotiation, parser, and seek-fallback tests use synthetic streams and a headless terminal model. Passing them does not prove physical glyph width, overwrite, resize, or copy behavior in a terminal emulator. Validate rendering in a real foreground terminal before treating a terminal as supported.
 
 ## Screen Reader Support
 

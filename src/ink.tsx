@@ -24,6 +24,13 @@ import {
 } from './explicit-width-detection.js';
 import {type TerminalResponse} from './input-parser.js';
 import {bsu, esu, shouldSynchronize} from './write-synchronized.js';
+import {
+	type PaintContext,
+	isOwnedSeekViewport,
+	isSeekViewport,
+	seekViewportReset,
+	selectPaintStrategy,
+} from './terminal-paint.js';
 import instances from './instances.js';
 import {TextSelectionController} from './text-selection-controller.js';
 import App from './components/App.js';
@@ -202,6 +209,13 @@ type PendingFrame = {
 	outputHeight: number;
 	staticOutput: string;
 	maxVisualWidth?: number;
+	layoutColumns: number;
+	layoutRows: number;
+};
+
+type PaintRequest = {
+	frame: PendingFrame;
+	outputToRender: string;
 };
 
 export type Options = {
@@ -279,7 +293,8 @@ export default class Ink {
 	private readonly log: LogUpdate;
 	private cursorPosition: CursorPosition | undefined;
 	private readonly throttledLog:
-		LogUpdate | DebouncedFunc<(output: string) => void>;
+		| DebouncedFunc<(request: PaintRequest) => void>
+		| ((request: PaintRequest) => void);
 
 	private readonly isScreenReaderEnabled: boolean;
 	private readonly interactive: boolean;
@@ -289,6 +304,7 @@ export default class Ink {
 	// Ignore last render after unmounting a tree to prevent empty output before exit
 	private isUnmounted: boolean;
 	private isUnmounting: boolean;
+	private outputError: Error | undefined;
 	private lastOutput: string;
 	private lastOutputToRender: string;
 	private lastOutputHeight: number;
@@ -313,7 +329,12 @@ export default class Ink {
 	private nextRenderCommit?: {promise: Promise<void>; resolve: () => void};
 	private readonly textSelection: TextSelectionController;
 	private lastLayoutWidth?: number;
+	private lastLayoutRows?: number;
+	private pendingStaticOutput = '';
+	private pendingHistoryAdvance = false;
 	private transformOutput?: (output: string) => string;
+	private paintEligible = false;
+	private paintCapability: 'raw' | 'osc66' | 'fallback' = 'raw';
 	private readonly widthDetection?: ExplicitWidthDetection;
 	private pendingFrame?: PendingFrame;
 	private reservedFrame?: PendingFrame;
@@ -354,8 +375,10 @@ export default class Ink {
 			Boolean(options.stdout.isTTY) &&
 			!options.debug &&
 			!this.isScreenReaderEnabled;
+		this.paintEligible = canUseExplicitWidth && explicitWidth !== '0';
 		if (canUseExplicitWidth && explicitWidth === '1') {
 			this.transformOutput = createExplicitWidthEncoder();
+			this.paintCapability = 'osc66';
 		} else if (
 			canUseExplicitWidth &&
 			explicitWidth !== '0' &&
@@ -380,6 +403,8 @@ export default class Ink {
 				onResult: this.settleExplicitWidth,
 			});
 			this.widthDetection.onSettled(this.finishExplicitWidthSettlement);
+		} else if (this.paintEligible) {
+			this.paintCapability = 'fallback';
 		}
 
 		this.alternateScreen = false;
@@ -417,32 +442,22 @@ export default class Ink {
 				: this.transformOutput,
 		});
 		this.cursorPosition = undefined;
+
+		const writePaintRequest = (request: PaintRequest) => {
+			this.writePaintRequest(request);
+		};
+
 		this.throttledLog = unthrottled
-			? this.log
-			: throttle(
-					(output: string) => {
-						const shouldWrite = this.log.willRender(output);
-						const sync = this.shouldSync();
-						if (sync && shouldWrite) {
-							this.options.stdout.write(bsu);
-						}
-
-						this.log(output);
-
-						if (sync && shouldWrite) {
-							this.options.stdout.write(esu);
-						}
-					},
-					undefined,
-					{
-						leading: true,
-						trailing: true,
-					},
-				);
+			? writePaintRequest
+			: throttle(writePaintRequest, undefined, {
+					leading: true,
+					trailing: true,
+				});
 
 		// Ignore last render after unmounting a tree to prevent empty output before exit
 		this.isUnmounted = false;
 		this.isUnmounting = false;
+		this.outputError = undefined;
 
 		// Store concurrent mode setting
 		this.isConcurrent = options.concurrent ?? false;
@@ -455,6 +470,7 @@ export default class Ink {
 		this.lastPhysicalFrameWasSoftWrapped = false;
 		this.lastViewportRows = getWindowSize(this.options.stdout).rows;
 		this.lastTerminalWidth = getWindowSize(this.options.stdout).columns;
+		this.lastLayoutRows = this.lastViewportRows;
 
 		// This variable is used only in debug mode to store full static output
 		// so that it's rerendered every time, not just new static parts, like in non-debug mode
@@ -499,6 +515,8 @@ export default class Ink {
 			};
 		}
 
+		options.stdout.on('error', this.handleStdoutError);
+
 		this.initKittyKeyboard();
 
 		this.exitPromise = new Promise((resolve, reject) => {
@@ -514,6 +532,7 @@ export default class Ink {
 	resized = () => {
 		if (this.deferUntilExplicitWidthSettlement(this.resized)) return;
 
+		settleThrottle(this.throttledLog, false);
 		const currentWidth = getWindowSize(this.options.stdout).columns;
 		this.calculateLayout();
 		this.onRender();
@@ -539,6 +558,28 @@ export default class Ink {
 		this.unmount();
 	};
 
+	handleStdoutError = (error: Error): void => {
+		this.surfaceOutputError(error);
+	};
+
+	surfaceOutputError(error: unknown): void {
+		this.log.restoreTerminalModes();
+		this.hasPhysicalFrame = false;
+		this.pendingHistoryAdvance = false;
+		const err = isErrorInput(error)
+			? error
+			: new Error('Terminal output failed');
+		if (!this.outputError) {
+			this.outputError = err;
+		}
+
+		if (this.isUnmounted || this.isUnmounting) {
+			return;
+		}
+
+		this.unmount(err);
+	}
+
 	setCursorPosition = (position: CursorPosition | undefined): void => {
 		this.cursorPosition = position;
 		this.log.setCursorPosition(position);
@@ -553,24 +594,52 @@ export default class Ink {
 		// before restoring output after external stdout/stderr writes.
 		this.log.setCursorPosition(this.cursorPosition);
 		const outputToRestore = this.lastOutputToRender || this.lastOutput + '\n';
+		const size = getWindowSize(this.options.stdout);
+		const layoutStale =
+			this.lastLayoutWidth !== size.columns ||
+			this.lastLayoutRows !== size.rows;
+		const context = this.getSeekPaintContext({
+			output: this.lastOutput,
+			outputHeight: this.lastOutputHeight,
+			staticOutput: '',
+			layoutColumns: this.lastLayoutWidth ?? size.columns,
+			layoutRows: this.lastLayoutRows ?? size.rows,
+		});
+		if (layoutStale && (context || this.pendingHistoryAdvance)) {
+			this.consumeHistoryAdvance(size.rows);
+			this.scheduleLayoutRender();
+			return;
+		}
+
+		if (context) {
+			this.consumeHistoryAdvance(context.rows);
+			this.log(outputToRestore, context);
+			const physical = this.log.getPhysicalFrame();
+			this.hasPhysicalFrame = Boolean(physical?.valid);
+			this.lastPhysicalFrameWasSoftWrapped = false;
+			return;
+		}
+
+		this.pendingHistoryAdvance = false;
 		this.log(outputToRestore);
 		this.hasPhysicalFrame = true;
 		this.lastPhysicalFrameWasSoftWrapped =
 			Boolean(this.options.stdout.isTTY) &&
-			isOutputSoftWrapped(
-				outputToRestore,
-				getWindowSize(this.options.stdout).columns,
-			);
+			isOutputSoftWrapped(outputToRestore, size.columns);
 	};
 
 	calculateLayout = () => {
-		const terminalWidth = getWindowSize(this.options.stdout).columns;
+		const {columns: terminalWidth, rows: terminalRows} = getWindowSize(
+			this.options.stdout,
+		);
 		const yoga = this.rootNode.yogaNode!;
 		const widthChanged = this.lastLayoutWidth !== terminalWidth;
 		if (widthChanged) {
 			yoga.setWidth(terminalWidth);
 			this.lastLayoutWidth = terminalWidth;
 		}
+
+		this.lastLayoutRows = terminalRows;
 
 		if (!widthChanged && !yoga.isDirty()) return;
 		yoga.calculateLayout(undefined, undefined, Yoga.DIRECTION_LTR);
@@ -684,11 +753,14 @@ export default class Ink {
 			return;
 		}
 
+		const size = getWindowSize(this.options.stdout);
 		const frame: PendingFrame = {
 			output,
 			outputHeight,
 			staticOutput: hasStaticOutput ? staticOutput : '',
 			maxVisualWidth,
+			layoutColumns: this.lastLayoutWidth ?? size.columns,
+			layoutRows: this.lastLayoutRows ?? size.rows,
 		};
 		if (this.widthDetection && !this.widthDetection.settled) {
 			this.pendingFrame = {
@@ -708,7 +780,11 @@ export default class Ink {
 			}
 			return;
 		}
-		this.commitInteractiveFrame(frame);
+		try {
+			this.commitInteractiveFrame(frame);
+		} catch (error) {
+			this.surfaceOutputError(error);
+		}
 	};
 
 	render(node: ReactNode): void {
@@ -783,18 +859,7 @@ export default class Ink {
 			return;
 		}
 
-		const sync = this.shouldSync();
-		if (sync) {
-			this.options.stdout.write(bsu);
-		}
-
-		this.log.clear(this.getPhysicalEraseOptions());
-		this.options.stdout.write(data);
-		this.restoreLastOutput();
-
-		if (sync) {
-			this.options.stdout.write(esu);
-		}
+		this.writeExternalOutput(data, this.options.stdout);
 	}
 
 	writeToStderr(data: string): void {
@@ -815,18 +880,7 @@ export default class Ink {
 			return;
 		}
 
-		const sync = this.shouldSync();
-		if (sync) {
-			this.options.stdout.write(bsu);
-		}
-
-		this.log.clear(this.getPhysicalEraseOptions());
-		this.options.stderr.write(data);
-		this.restoreLastOutput();
-
-		if (sync) {
-			this.options.stdout.write(esu);
-		}
+		this.writeExternalOutput(data, this.options.stderr);
 	}
 
 	// eslint-disable-next-line @typescript-eslint/no-restricted-types
@@ -863,6 +917,9 @@ export default class Ink {
 				this.calculateLayout();
 				this.onRender();
 			}
+
+			// Accept pending paints from the controlled final render before locking.
+			settleThrottle(this.throttledLog, true);
 		}
 
 		// Mark as unmounted after the final render but before stdout writes
@@ -871,9 +928,9 @@ export default class Ink {
 
 		this.unsubscribeExit();
 
-		// Flush any pending throttled log writes if possible, otherwise cancel to
-		// prevent delayed callbacks from writing to a closed stream.
-		settleThrottle(this.throttledLog, canWriteToStdout);
+		// Cancel leftover throttled log writes so no new frame starts after unmount.
+		settleThrottle(this.throttledLog, false);
+		this.log.restoreTerminalModes();
 		if (typeof this.restoreConsole === 'function') {
 			// Once unmount starts, Ink stops trying to manage teardown-time
 			// console output. Restoring the native console before React cleanup keeps
@@ -892,7 +949,15 @@ export default class Ink {
 				this.cancelKittyDetection();
 			}
 
+			this.log.restoreTerminalModes();
+			const seekTeardown =
+				this.log.getPhysicalFrame?.()?.context.strategy === 'seek-viewport';
+
 			if (canWriteToStdout) {
+				if (this.interactive && !this.options.debug && seekTeardown) {
+					this.log.done();
+				}
+
 				if (this.kittyProtocolEnabled) {
 					this.writeBestEffort(this.options.stdout, '\u001B[<u');
 				}
@@ -903,6 +968,9 @@ export default class Ink {
 				// diagnostics onto it. Trying to preserve teardown output across the
 				// buffer switch adds fragile lifecycle-specific behavior, so Ink keeps
 				// alternate-screen teardown intentionally simple and best-effort.
+				// Seek cursor/cache teardown must finish before this screen switch:
+				// after the switch, no seek done() path may reposition or erase the
+				// returned primary screen.
 				if (this.alternateScreen) {
 					this.writeBestEffort(
 						this.options.stdout,
@@ -920,11 +988,14 @@ export default class Ink {
 					this.options.stdout.write(
 						this.options.debug ? '\n' : this.lastOutput + '\n',
 					);
-				} else if (!this.options.debug) {
+				} else if (!this.options.debug && !seekTeardown) {
 					this.log.done();
 				}
+			} else if (this.interactive && !this.options.debug) {
+				try {
+					this.log.done();
+				} catch {}
 			}
-
 			this.kittyProtocolEnabled = false;
 
 			instances.delete(this.options.stdout);
@@ -940,8 +1011,10 @@ export default class Ink {
 			const {exitResult} = this;
 
 			const resolveOrReject = () => {
-				if (isErrorInput(error)) {
-					this.rejectExitPromise(error);
+				this.options.stdout.off('error', this.handleStdoutError);
+				const exitError = isErrorInput(error) ? error : this.outputError;
+				if (exitError) {
+					this.rejectExitPromise(exitError);
 				} else {
 					this.resolveExitPromise(exitResult);
 				}
@@ -952,7 +1025,17 @@ export default class Ink {
 			if (isProcessExiting) {
 				resolveOrReject();
 			} else if (canWriteToStdout && hasWritableState) {
-				this.options.stdout.write('', resolveOrReject);
+				try {
+					this.options.stdout.write('', errorFromBarrier => {
+						if (errorFromBarrier && !this.outputError) {
+							this.outputError = errorFromBarrier;
+						}
+
+						resolveOrReject();
+					});
+				} catch {
+					resolveOrReject();
+				}
 			} else {
 				setImmediate(resolveOrReject);
 			}
@@ -1035,9 +1118,35 @@ export default class Ink {
 
 		if (canWriteToStdout && hasWritableState) {
 			await new Promise<void>(resolve => {
-				this.options.stdout.write('', () => {
+				let settled = false;
+				const finish = (writeError?: Error | null) => {
+					if (settled) {
+						return;
+					}
+
+					settled = true;
+					this.options.stdout.off('error', onError);
+					if (writeError) {
+						this.surfaceOutputError(writeError);
+					}
+
 					resolve();
-				});
+				};
+				const onError = (writeError: Error) => {
+					finish(writeError);
+				};
+				this.options.stdout.once('error', onError);
+				try {
+					this.options.stdout.write('', writeError => {
+						finish(writeError);
+					});
+				} catch (writeError) {
+					finish(
+						isErrorInput(writeError)
+							? writeError
+							: new Error('Terminal output failed'),
+					);
+				}
 			});
 			return;
 		}
@@ -1048,7 +1157,7 @@ export default class Ink {
 	clear(): void {
 		if (this.deferUntilExplicitWidthSettlement(this.clear)) return;
 		if (this.interactive && !this.options.debug) {
-			this.log.clear(this.getPhysicalEraseOptions());
+			this.clearPhysicalFrame();
 			this.hasPhysicalFrame = false;
 			this.lastPhysicalFrameWasSoftWrapped = false;
 		}
@@ -1075,6 +1184,10 @@ export default class Ink {
 	}
 
 	private getPhysicalEraseOptions(): {eraseLineCount: number} | undefined {
+		if (isOwnedSeekViewport(this.log.getPhysicalFrame?.())) {
+			return undefined;
+		}
+
 		if (
 			!this.options.stdout.isTTY ||
 			!this.hasPhysicalFrame ||
@@ -1174,9 +1287,155 @@ export default class Ink {
 		outputHeight: number,
 		staticOutput: string,
 		maxVisualWidth?: number,
+		layoutColumns?: number,
+		layoutRows?: number,
 	): void {
+		const size = getWindowSize(this.options.stdout);
+		this.renderPendingFrame({
+			output,
+			outputHeight,
+			staticOutput,
+			maxVisualWidth,
+			layoutColumns: layoutColumns ?? this.lastLayoutWidth ?? size.columns,
+			layoutRows: layoutRows ?? this.lastLayoutRows ?? size.rows,
+		});
+	}
+
+	private renderPendingFrame(frame: PendingFrame): void {
+		const {columns: terminalWidth, rows: terminalRows} = getWindowSize(
+			this.options.stdout,
+		);
+		if (
+			frame.layoutColumns !== terminalWidth ||
+			frame.layoutRows !== terminalRows
+		) {
+			this.deferStatic(frame);
+			this.scheduleLayoutRender();
+			return;
+		}
+
+		const previousPhysical = this.log.getPhysicalFrame?.();
+		const previousSeek = isOwnedSeekViewport(previousPhysical);
+		const seekContext = this.getSeekPaintContext(frame);
+		if (
+			previousSeek &&
+			!seekContext &&
+			frame.outputHeight === previousPhysical.context.rows
+		) {
+			this.deferStatic(frame);
+			return;
+		}
+
+		if (previousSeek || seekContext) {
+			this.renderSeekFrame(frame, seekContext, previousSeek);
+			return;
+		}
+
+		this.renderRawInteractiveFrame(frame);
+	}
+
+	private renderSeekFrame(
+		frame: PendingFrame,
+		seekContext: PaintContext | undefined,
+		previousSeek: boolean,
+	): void {
+		const isTty = this.options.stdout.isTTY;
+		const {rows: terminalRows} = getWindowSize(this.options.stdout);
+		const viewportRows = isTty ? terminalRows : 24;
+		const isFullscreen = isTty && frame.outputHeight >= viewportRows;
+		const outputToRender = isFullscreen ? frame.output : frame.output + '\n';
+
+		if (!seekContext) {
+			this.leaveSeekViewport();
+			this.renderRawInteractiveFrame(frame);
+			return;
+		}
+
+		const context = seekContext;
+		const staticOutput = this.takeStaticOutput(frame);
+		const previousPhysical = this.log.getPhysicalFrame?.();
+		const dimensionsChanged =
+			!previousPhysical?.valid ||
+			previousPhysical.context.columns !== context.columns ||
+			previousPhysical.context.rows !== context.rows ||
+			previousPhysical.context.strategy !== context.strategy;
+		const entering = !previousSeek;
+
+		if (staticOutput !== '') {
+			const sync = this.shouldSync();
+			if (sync) {
+				this.options.stdout.write(bsu);
+			}
+
+			try {
+				this.clearPhysicalFrame();
+				this.hasPhysicalFrame = false;
+				this.options.stdout.write(
+					this.transformOutput?.(staticOutput) ?? staticOutput,
+				);
+				this.pendingHistoryAdvance = true;
+				this.consumeHistoryAdvance(context.rows);
+				this.log(outputToRender, context);
+			} catch (error) {
+				this.failExternalOutput(error);
+			} finally {
+				if (sync) {
+					try {
+						this.options.stdout.write(esu);
+					} catch {}
+				}
+			}
+
+			this.publishLogicalFrame(frame, outputToRender, true);
+			return;
+		}
+
+		if (entering || dimensionsChanged) {
+			const sync = this.shouldSync();
+			if (sync) {
+				this.options.stdout.write(bsu);
+			}
+
+			try {
+				if (this.pendingHistoryAdvance) {
+					this.consumeHistoryAdvance(context.rows);
+				} else {
+					this.options.stdout.write(seekViewportReset);
+					this.log.reset();
+				}
+
+				this.log.repaint(outputToRender, undefined, context);
+			} finally {
+				if (sync) {
+					try {
+						this.options.stdout.write(esu);
+					} catch {}
+				}
+			}
+
+			this.publishLogicalFrame(frame, outputToRender, true);
+			return;
+		}
+
+		if (
+			outputToRender !== this.lastOutputToRender ||
+			this.log.isCursorDirty()
+		) {
+			this.throttledLog({
+				frame,
+				outputToRender,
+			});
+			return;
+		}
+
+		this.publishLogicalFrame(frame, outputToRender, false);
+	}
+
+	private renderRawInteractiveFrame(frame: PendingFrame): void {
+		const staticOutput = this.takeStaticOutput(frame);
 		const hasStaticOutput = staticOutput !== '';
 		const isTty = this.options.stdout.isTTY;
+		const {output, outputHeight, maxVisualWidth} = frame;
 
 		const {columns: terminalWidth, rows: terminalRows} = getWindowSize(
 			this.options.stdout,
@@ -1295,7 +1554,10 @@ export default class Ink {
 			this.log.isCursorDirty()
 		) {
 			// ThrottledLog manages its own bsu/esu at actual write time
-			this.throttledLog(outputToRender);
+			this.throttledLog({
+				frame,
+				outputToRender,
+			});
 			didWriteFrame = true;
 		}
 
@@ -1319,14 +1581,215 @@ export default class Ink {
 	}
 
 	private commitInteractiveFrame(frame: PendingFrame): void {
-		// Pending Static deltas must not leak into an earlier frame's replay.
-		this.fullStaticOutput += frame.staticOutput;
 		this.renderInteractiveFrame(
 			frame.output,
 			frame.outputHeight,
 			frame.staticOutput,
 			frame.maxVisualWidth,
+			frame.layoutColumns,
+			frame.layoutRows,
 		);
+	}
+
+	private resolvePaintContext(frame: PendingFrame): PaintContext {
+		const {columns, rows} = getWindowSize(this.options.stdout);
+		return {
+			strategy: selectPaintStrategy({
+				eligible: this.paintEligible,
+				capability: this.paintCapability,
+				incremental: Boolean(this.options.incrementalRendering),
+				outputHeight: frame.outputHeight,
+				rows,
+			}),
+			columns,
+			rows,
+		};
+	}
+
+	private getSeekPaintContext(frame: PendingFrame): PaintContext | undefined {
+		const context = this.resolvePaintContext(frame);
+		if (!isSeekViewport(context)) {
+			return undefined;
+		}
+
+		const {rows} = getWindowSize(this.options.stdout);
+		if (frame.outputHeight !== rows || context.rows !== rows) {
+			return undefined;
+		}
+
+		return context;
+	}
+
+	private clearPhysicalFrame(): void {
+		const physical = this.log.getPhysicalFrame?.();
+		if (isOwnedSeekViewport(physical)) {
+			this.log.clear();
+			return;
+		}
+
+		this.log.clear(this.getPhysicalEraseOptions());
+	}
+
+	private leaveSeekViewport(): void {
+		this.clearPhysicalFrame();
+		this.log.restoreTerminalModes();
+		this.log.reset();
+		this.hasPhysicalFrame = false;
+		this.lastPhysicalFrameWasSoftWrapped = false;
+	}
+
+	private consumeHistoryAdvance(rows: number): void {
+		if (!this.pendingHistoryAdvance) {
+			return;
+		}
+
+		this.pendingHistoryAdvance = false;
+		if (rows > 0) {
+			this.options.stdout.write('\r\n'.repeat(rows) + '\u001B[H');
+		}
+	}
+
+	private failExternalOutput(error: unknown): never {
+		this.log.restoreTerminalModes();
+		this.hasPhysicalFrame = false;
+		this.pendingHistoryAdvance = false;
+		throw error;
+	}
+
+	private writeExternalOutput(data: string, stream: NodeJS.WriteStream): void {
+		const sync = this.shouldSync();
+		if (sync) {
+			this.options.stdout.write(bsu);
+		}
+
+		try {
+			const ownedSeek = isOwnedSeekViewport(this.log.getPhysicalFrame?.());
+			const size = getWindowSize(this.options.stdout);
+			const willSeek = Boolean(
+				this.getSeekPaintContext({
+					output: this.lastOutput,
+					outputHeight: this.lastOutputHeight,
+					staticOutput: '',
+					layoutColumns: this.lastLayoutWidth ?? size.columns,
+					layoutRows: this.lastLayoutRows ?? size.rows,
+				}),
+			);
+			this.clearPhysicalFrame();
+			this.hasPhysicalFrame = false;
+			stream.write(data);
+			if (ownedSeek || willSeek) {
+				this.pendingHistoryAdvance = true;
+			}
+
+			this.restoreLastOutput();
+		} catch (error) {
+			this.failExternalOutput(error);
+		} finally {
+			if (sync) {
+				try {
+					this.options.stdout.write(esu);
+				} catch {}
+			}
+		}
+	}
+
+	private writePaintRequest(request: PaintRequest): void {
+		if (this.isUnmounted) {
+			return;
+		}
+
+		try {
+			const {columns, rows} = getWindowSize(this.options.stdout);
+			if (
+				request.frame.layoutColumns !== columns ||
+				request.frame.layoutRows !== rows
+			) {
+				this.deferStatic(request.frame);
+				this.scheduleLayoutRender();
+				return;
+			}
+
+			const previousPhysical = this.log.getPhysicalFrame?.();
+			const seekContext = this.getSeekPaintContext(request.frame);
+			if (
+				seekContext === undefined &&
+				isOwnedSeekViewport(previousPhysical) &&
+				request.frame.outputHeight === previousPhysical.context.rows
+			) {
+				this.deferStatic(request.frame);
+				return;
+			}
+
+			const shouldWrite = this.log.willRender(
+				request.outputToRender,
+				seekContext,
+			);
+			const sync = this.shouldSync();
+			if (sync && shouldWrite) {
+				this.options.stdout.write(bsu);
+			}
+
+			try {
+				this.log(request.outputToRender, seekContext);
+			} finally {
+				if (sync && shouldWrite) {
+					try {
+						this.options.stdout.write(esu);
+					} catch {}
+				}
+			}
+
+			this.publishLogicalFrame(
+				request.frame,
+				request.outputToRender,
+				shouldWrite,
+			);
+		} catch (error) {
+			this.surfaceOutputError(error);
+		}
+	}
+
+	private publishLogicalFrame(
+		frame: PendingFrame,
+		outputToRender: string,
+		didWrite: boolean,
+	): void {
+		this.lastOutput = frame.output;
+		this.lastOutputToRender = outputToRender;
+		this.lastOutputHeight = frame.outputHeight;
+		const size = getWindowSize(this.options.stdout);
+		this.lastViewportRows = size.rows;
+		this.lastTerminalWidth = size.columns;
+
+		const physical = this.log.getPhysicalFrame?.();
+		if (isOwnedSeekViewport(physical)) {
+			this.hasPhysicalFrame = true;
+			this.lastPhysicalFrameWasSoftWrapped = false;
+			return;
+		}
+
+		this.hasPhysicalFrame ||= didWrite;
+	}
+
+	private takeStaticOutput(frame: PendingFrame): string {
+		const staticOutput = (this.pendingStaticOutput ?? '') + frame.staticOutput;
+		this.pendingStaticOutput = '';
+		this.fullStaticOutput = (this.fullStaticOutput ?? '') + staticOutput;
+		return staticOutput;
+	}
+
+	private deferStatic(frame: PendingFrame): void {
+		this.pendingStaticOutput =
+			(this.pendingStaticOutput ?? '') + frame.staticOutput;
+	}
+
+	private scheduleLayoutRender(): void {
+		if (this.isUnmounted) {
+			return;
+		}
+
+		this.calculateLayout();
+		this.onRender();
 	}
 
 	private reserveExplicitWidthFrame(): boolean {
@@ -1341,7 +1804,18 @@ export default class Ink {
 	private settleExplicitWidth(supported: boolean): void {
 		const reserved = this.reservedFrame;
 		this.reservedFrame = undefined;
-		if (supported) this.transformOutput = createExplicitWidthEncoder();
+		if (
+			!this.isUnmounted &&
+			this.paintEligible &&
+			this.paintCapability === 'raw'
+		) {
+			if (supported) {
+				this.transformOutput = createExplicitWidthEncoder();
+				this.paintCapability = 'osc66';
+			} else {
+				this.paintCapability = 'fallback';
+			}
+		}
 		try {
 			if (
 				this.isUnmounted ||

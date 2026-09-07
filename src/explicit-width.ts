@@ -1,5 +1,6 @@
 import {Buffer} from 'node:buffer';
 import stringWidth from 'string-width';
+import {readTerminalControl} from './terminal-control.js';
 
 const ascii = /^[\u0000-\u007F]*$/;
 const terminalControl = /[\u0000-\u001F\u007F-\u009F]/;
@@ -9,106 +10,6 @@ const noncharacter =
 
 const isWellFormed = (value: string): boolean =>
 	(value as string & {isWellFormed: () => boolean}).isWellFormed();
-
-const consumeCsiBody = (text: string, start: number): number | undefined => {
-	let index = start;
-	while (index < text.length) {
-		const code = text.charCodeAt(index);
-		if (code < 0x30 || code > 0x3f) {
-			break;
-		}
-
-		index++;
-	}
-
-	while (index < text.length) {
-		const code = text.charCodeAt(index);
-		if (code < 0x20 || code > 0x2f) {
-			break;
-		}
-
-		index++;
-	}
-
-	if (index >= text.length) {
-		return undefined;
-	}
-
-	const final = text.charCodeAt(index);
-	if (final < 0x40 || final > 0x7e) {
-		return undefined;
-	}
-
-	return index - start + 1;
-};
-
-const consumeString = (
-	text: string,
-	start: number,
-	isOsc: boolean,
-	c1Introducer: boolean,
-): number | undefined => {
-	let index = start + (c1Introducer ? 1 : 2);
-	while (index < text.length) {
-		const code = text.charCodeAt(index);
-		if (isOsc && code === 0x07) {
-			return index - start + 1;
-		}
-
-		if (code === 0x9c) {
-			return index - start + 1;
-		}
-
-		if (
-			code === 0x1b &&
-			index + 1 < text.length &&
-			text.charCodeAt(index + 1) === 0x5c
-		) {
-			return index - start + 2;
-		}
-
-		index++;
-	}
-
-	return undefined;
-};
-
-const consumeEsc = (text: string, start: number): number | undefined => {
-	if (start + 1 >= text.length) {
-		return undefined;
-	}
-
-	const next = text.charCodeAt(start + 1);
-	if (next === 0x5b) {
-		const body = consumeCsiBody(text, start + 2);
-		return body === undefined ? undefined : 2 + body;
-	}
-
-	if (next === 0x5d) {
-		return consumeString(text, start, true, false);
-	}
-
-	if (next === 0x50 || next === 0x5f || next === 0x5e || next === 0x58) {
-		return consumeString(text, start, false, false);
-	}
-
-	let index = start + 1;
-	while (index < text.length) {
-		const code = text.charCodeAt(index);
-		if (code >= 0x20 && code <= 0x2f) {
-			index++;
-			continue;
-		}
-
-		if (code >= 0x30 && code <= 0x7e) {
-			return index - start + 1;
-		}
-
-		return undefined;
-	}
-
-	return undefined;
-};
 
 const remember = (
 	cache: Map<string, string>,
@@ -194,55 +95,15 @@ export function createExplicitWidthEncoder(): (text: string) => string {
 		while (index < row.length) {
 			const code = row.charCodeAt(index);
 
-			if (code === 0x1b) {
-				const length = consumeEsc(row, index);
-				if (length === undefined) {
-					return undefined;
-				}
-
-				flushPrintable(index);
-				pieces.push(row.slice(index, index + length));
-				index += length;
-				printableStart = index;
-				continue;
-			}
-
-			if (code === 0x9b) {
-				const body = consumeCsiBody(row, index + 1);
-				if (body === undefined) {
-					return undefined;
-				}
-
-				flushPrintable(index);
-				pieces.push(row.slice(index, index + 1 + body));
-				index += 1 + body;
-				printableStart = index;
-				continue;
-			}
-
-			if (
-				code === 0x9d ||
-				code === 0x90 ||
-				code === 0x9f ||
-				code === 0x9e ||
-				code === 0x98
-			) {
-				const length = consumeString(row, index, code === 0x9d, true);
-				if (length === undefined) {
-					return undefined;
-				}
-
-				flushPrintable(index);
-				pieces.push(row.slice(index, index + length));
-				index += length;
-				printableStart = index;
-				continue;
-			}
-
 			if (code <= 0x1f || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+				const control = readTerminalControl(row, index);
+				if (control === undefined) {
+					return undefined;
+				}
+
 				flushPrintable(index);
-				pieces.push(row[index]!);
-				index++;
+				pieces.push(control.raw);
+				index = control.end;
 				printableStart = index;
 				continue;
 			}

@@ -761,6 +761,7 @@ test.serial(
 				stdout,
 				interactive: true,
 				incrementalRendering: true,
+				explicitWidth: 'disabled',
 				maxFps: 1000,
 			},
 		);
@@ -808,6 +809,7 @@ test.serial(
 				stdout,
 				interactive: true,
 				incrementalRendering: true,
+				explicitWidth: 'disabled',
 				maxFps: 1000,
 			},
 		);
@@ -926,6 +928,7 @@ test.serial(
 			stdout,
 			interactive: true,
 			incrementalRendering: true,
+			explicitWidth: 'disabled',
 			maxFps: 1000,
 		});
 		registerInstanceTeardown(t, instance);
@@ -1429,6 +1432,7 @@ test.serial(
 			stdout,
 			interactive: true,
 			incrementalRendering: true,
+			explicitWidth: 'disabled',
 			maxFps: 1000,
 		});
 		registerInstanceTeardown(t, instance);
@@ -1463,6 +1467,7 @@ test.serial(
 			stdout,
 			interactive: true,
 			incrementalRendering: true,
+			explicitWidth: 'disabled',
 			maxFps: 1000,
 		});
 		registerInstanceTeardown(t, instance);
@@ -1498,6 +1503,7 @@ test.serial(
 			stdout,
 			interactive: true,
 			incrementalRendering: true,
+			explicitWidth: 'disabled',
 			maxFps: 1000,
 		});
 		registerInstanceTeardown(t, instance);
