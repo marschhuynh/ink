@@ -139,3 +139,22 @@ test('sliceSelectableCells respects wide characters', t => {
 	t.is(sliceSelectableCells({text: 'a中b'}, 2, 3), '中');
 	t.is(sliceSelectableCells({text: 'a中b'}, 0, 1), 'a');
 });
+
+// Newly authored reconstruction regression, not a recovered upstream test.
+test('reconstruction: selection span lookup stays within exclusive row bounds', t => {
+	const visited: number[] = [];
+	const spans = getSelectionSpans(
+		{x: 1, y: 0},
+		{x: 2, y: 100},
+		y => {
+			visited.push(y);
+			return {text: 'abcd'};
+		},
+		{startY: 50, endY: 52},
+	);
+	t.deepEqual(visited, [50, 51]);
+	t.deepEqual(spans, [
+		{y: 50, x1: 0, x2: 4},
+		{y: 51, x1: 0, x2: 4},
+	]);
+});

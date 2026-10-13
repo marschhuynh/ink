@@ -758,21 +758,33 @@ test.serial(
 	},
 );
 
-test.serial(
-	'disabled and force-on instances keep private CPR on the application channel',
-	async t => {
-		for (const config of [
-			{options: {explicitWidth: 'disabled' as const}},
-			{env: '1'},
-		] as const) {
-			const h = setup(t, config);
-			await h.instance.waitUntilRenderFlush();
-			t.false(h.stdout.getWrites().includes(query));
-			h.stdin.push('\u001B[?7;9Rz');
-			await until(() => h.inputs.length > 0);
-			t.deepEqual(h.inputs, ['\u001B[?7;9R', 'z']);
-			h.instance.unmount();
-			await h.exit;
-		}
-	},
-);
+// 7.7.5-alpha also installs the CPR response channel for incremental anchors.
+for (const incrementalRendering of [false, true]) {
+	test.serial(
+		`disabled and force-on CPR routing: incremental=${incrementalRendering}`,
+		async t => {
+			for (const config of [
+				{options: {explicitWidth: 'disabled' as const}},
+				{env: '1'},
+			] as const) {
+				const h = setup(t, {
+					...config,
+					options: {
+						...('options' in config ? config.options : {}),
+						incrementalRendering,
+					},
+				});
+				await h.instance.waitUntilRenderFlush();
+				t.false(h.stdout.getWrites().includes(query));
+				h.stdin.push('\u001B[?7;9Rz');
+				await until(() => h.inputs.length > 0);
+				t.deepEqual(
+					h.inputs,
+					incrementalRendering ? ['z'] : ['\u001B[?7;9R', 'z'],
+				);
+				h.instance.unmount();
+				await h.exit;
+			}
+		},
+	);
+}

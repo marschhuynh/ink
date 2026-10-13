@@ -2,7 +2,7 @@ import renderNodeToOutput, {
 	renderNodeToScreenReaderOutput,
 	type PaintState,
 } from './render-node-to-output.js';
-import Output from './output.js';
+import Output, {OutputCaches} from './output.js';
 import {paintSelection} from './paint-selection.js';
 import {type TextSelectionController} from './text-selection-controller.js';
 import {type DOMElement} from './dom.js';
@@ -16,6 +16,10 @@ type Result = {
 };
 
 let nextPaintEpoch = 0;
+// Shared across every Output built per frame: consecutive frames re-tokenize
+// mostly identical rows, so a persistent cache avoids paying full
+// tokenization on each render. Bounded internally (see output.ts).
+const outputCaches = new OutputCaches();
 
 const createPaintState = (): PaintState => ({
 	epoch: ++nextPaintEpoch,
@@ -57,6 +61,7 @@ const renderer = (
 		const output = new Output({
 			width: node.yogaNode.getComputedWidth(),
 			height: node.yogaNode.getComputedHeight(),
+			caches: outputCaches,
 		});
 
 		const paintState = createPaintState();
@@ -72,6 +77,7 @@ const renderer = (
 			staticOutput = new Output({
 				width: node.staticNode.yogaNode.getComputedWidth(),
 				height: node.staticNode.yogaNode.getComputedHeight(),
+				caches: outputCaches,
 			});
 
 			renderNodeToOutput(node.staticNode, staticOutput, {

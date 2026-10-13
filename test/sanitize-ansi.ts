@@ -222,3 +222,12 @@ test('strip standalone C1 control characters', t => {
 	t.false(output.includes('\u008E'));
 	t.is(stripAnsi(output), 'ABC');
 });
+
+// Reconstruction regressions: newly authored from the 7.7.5-alpha artifacts.
+test('reconstruction: normalize malformed text and retain only OSC 8', t => {
+	t.is(
+		sanitizeAnsi('A\uD800B\r\nC\rD\tE\u0000\u0007\b\u007F'),
+		'A\uFFFDB\nC\nD\tE',
+	);
+	t.is(sanitizeAnsi('\u001B]0;title\u0007A\u009D52;c;data\u009CB'), 'AB');
+});

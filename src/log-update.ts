@@ -52,6 +52,15 @@ export type LogUpdate = {
 	reset: () => void;
 	sync: (str: string, physical?: PhysicalFrame) => void;
 	setCursorPosition: (position: CursorPosition | undefined) => void;
+	/**
+	 * Record a DECXCPR (`ESC[?row;col R`) reply. Used to anchor the painted
+	 * block's absolute top row for scroll-region paints on non-fullscreen
+	 * frames. Replies that do not correspond to an outstanding query, or that
+	 * arrived after a subsequent write, are ignored.
+	 */
+	noteCursorRow: (row: number) => void;
+	/** True while a `ESC[?6n` cursor-position query is awaiting its reply. */
+	hasPendingAnchorQuery: () => boolean;
 	isCursorDirty: () => boolean;
 	willRender: (str: string, context?: PaintContext) => boolean;
 	getPhysicalFrame: () => PhysicalFrame | undefined;
@@ -133,6 +142,9 @@ const suffixUnchanged = (
 // Detect whether `nextLines` is `previousLines` shifted vertically by k rows
 // with at most a small band of changed edge lines. Only exact whole-line
 // equality counts (same semantics as the existing positional diff).
+//
+// `end` is always non-degenerate: both branches require the band to be taller
+// than the shift, so `start < end` holds whenever a shift is returned.
 const detectScrollShift = (
 	previousLines: string[],
 	nextLines: string[],
@@ -378,6 +390,8 @@ const createStandard = (
 		cursorDirty = true;
 	};
 
+	render.noteCursorRow = () => {};
+	render.hasPendingAnchorQuery = () => false;
 	render.isCursorDirty = () => cursorDirty;
 	render.willRender = (str: string, _context?: PaintContext) =>
 		hasChanges(str, getActiveCursor());
@@ -408,6 +422,124 @@ const createIncremental = (
 	const seekPreparer = createSeekPreparer();
 	let streamErrorHandler: ((error: Error) => void) | undefined;
 	let handlingAsyncWriteError = false;
+
+	// Scroll-region anchoring. The scroll fast path emits absolute screen
+	// coordinates (DECSTBM + CUP), which requires knowing the absolute screen
+	// row of previousLines[0]. When the block covers the screen that row is
+	// implied by the bottom anchor; otherwise it is measured once via a
+	// DECXCPR query (ESC[?6n -> ESC[?row;col R) appended to a frame write and
+	// maintained across writes by bounded bottom-scroll accounting.
+	let frameTopRow: number | undefined;
+	let pendingAnchorQuery = false;
+	// Bounded retry budget: a terminal that never answers DECXCPR must not be
+	// queried forever -- an outstanding query holds isTerminalResponsePending
+	// and would swallow the user's bare ESC keypresses.
+	let anchorAttempts = 0;
+	const maxAnchorAttempts = 3;
+	// Monotonic count of tracked writes made while a query is outstanding. A
+	// reply is honored only if this count equals the value captured just after
+	// the query's carrier write -- a later write means the reply describes a
+	// different cursor position and must be discarded.
+	let anchorWritesDuringQuery = 0;
+	let anchorQueryWritesAtSend = 0;
+	const terminalRowLimit = (): number | undefined => {
+		const {rows} = stream as Writable & {rows?: number};
+		return typeof rows === 'number' && rows > 0 ? rows : undefined;
+	};
+	const resetAnchor = (): void => {
+		frameTopRow = undefined;
+		pendingAnchorQuery = false;
+	};
+	// All writes that can move the physical cursor between a query and its
+	// reply invalidate that reply; funnel them through one counter.
+	const trackedWrite = (
+		text: string,
+		callback?: (error?: Error | null) => void,
+	): void => {
+		if (callback) {
+			stream.write(text, callback);
+		} else {
+			stream.write(text);
+		}
+		if (pendingAnchorQuery) {
+			anchorWritesDuringQuery++;
+		}
+	};
+	// After a block of `lineCount` logical lines is written starting at the old
+	// block's top, the new block's top stays put unless the write scrolled the
+	// screen (a block taller than the viewport pulls its top above row 0).
+	const updateFrameTopRow = (lineCount: number): void => {
+		const rows = terminalRowLimit();
+		if (rows === undefined || frameTopRow === undefined) {
+			return;
+		}
+		frameTopRow = Math.max(0, Math.min(frameTopRow, rows - lineCount));
+	};
+	// A DECXCPR reply is meaningful only for the outstanding query and only if
+	// no write landed after the carrier (which would move the cursor elsewhere
+	// and make the answer stale).
+	const noteAnchorRow = (row: number): void => {
+		if (!pendingAnchorQuery) {
+			return;
+		}
+		pendingAnchorQuery = false;
+		if (
+			anchorWritesDuringQuery === anchorQueryWritesAtSend &&
+			previousLines.length > 0
+		) {
+			// The reply reports the cursor resting on the block's last logical
+			// line (1-based), so the block top sits `length` rows above it.
+			frameTopRow = row - previousLines.length;
+		}
+	};
+	// Returns a DECXCPR query to append to the upcoming frame write, or ''. The
+	// reply then reports the post-write cursor row = the block's bottom line.
+	const maybeArmAnchorQuery = (lineCount: number): string => {
+		const rows = terminalRowLimit();
+		if (rows === undefined || lineCount >= rows || frameTopRow !== undefined) {
+			// No TTY to answer, the block covers the screen (top implied), or we
+			// already hold a maintained anchor.
+			return '';
+		}
+		// A committed cursor moves the post-write position to the caret, so the
+		// reply would describe the caret row, not the block bottom.
+		if (getActiveCursor() !== undefined) {
+			return '';
+		}
+		if (pendingAnchorQuery) {
+			if (anchorWritesDuringQuery === anchorQueryWritesAtSend) {
+				// Still within the carrier-write window; keep waiting.
+				return '';
+			}
+			// A later write landed and no reply arrived -- the query was lost.
+			pendingAnchorQuery = false;
+		}
+		if (anchorAttempts >= maxAnchorAttempts) {
+			return '';
+		}
+		anchorAttempts++;
+		pendingAnchorQuery = true;
+		return '\u001B[?6n';
+	};
+	// Call immediately after the carrier write so the snapshot includes it.
+	const sealAnchorQuery = (): void => {
+		anchorQueryWritesAtSend = anchorWritesDuringQuery;
+	};
+	// Absolute screen row of previousLines[0], when determinable. When the
+	// block covers the screen its top is implied by the bottom anchor. When
+	// the stream reports no row count (non-TTY / test doubles) there is no
+	// safe anchor -- emitting absolute region coordinates could corrupt rows
+	// above a bottom-anchored block -- so we decline the fast path.
+	const blockTopRowFor = (): number | undefined => {
+		const rows = terminalRowLimit();
+		if (rows === undefined) {
+			return undefined;
+		}
+		if (previousLines.length >= rows) {
+			return Math.max(0, rows - previousLines.length);
+		}
+		return frameTopRow;
+	};
 
 	const getActiveCursor = () => cursorPosition;
 	const hasChanges = (
@@ -457,7 +589,7 @@ const createIncremental = (
 
 		if (canWriteStream()) {
 			try {
-				stream.write(decawmOn);
+				trackedWrite(decawmOn);
 			} catch {
 				// Best-effort autowrap restore.
 			}
@@ -477,6 +609,7 @@ const createIncremental = (
 		previousIdentities = [];
 		previousOutput = '';
 		previousLines = [];
+		resetAnchor();
 		// A queued successful write can establish the next ordered diff base,
 		// but an async error invalidates it; it is not proof that a terminal
 		// displayed the frame.
@@ -555,7 +688,7 @@ const createIncremental = (
 		attachStreamErrorListener();
 
 		try {
-			stream.write(payload, error => {
+			trackedWrite(payload, error => {
 				if (error) {
 					handleAsyncWriteError();
 				}
@@ -728,7 +861,7 @@ const createIncremental = (
 		const previousVisible = visibleLineCount(previousLines, previousOutput);
 
 		if (str === previousOutput && cursorChanged) {
-			stream.write(
+			trackedWrite(
 				buildCursorOnlySequence({
 					cursorWasShown,
 					previousLineCount: previousLines.length,
@@ -750,7 +883,7 @@ const createIncremental = (
 
 		if (str === '\n' || previousOutput.length === 0) {
 			const cursorSuffix = buildCursorSuffix(outputCursorRow, activeCursor);
-			stream.write(
+			trackedWrite(
 				returnPrefix +
 					ansiEscapes.eraseLines(previousLines.length) +
 					(transformOutput ? transformOutput(str) : str) +
@@ -772,17 +905,21 @@ const createIncremental = (
 
 		const prevVisible = previousLines.slice(0, previousVisible);
 		const nextVisible = nextLines.slice(0, visibleCount);
+		const blockTop = blockTopRowFor();
+		// The scroll fast path emits absolute screen coordinates, so it needs a
+		// real anchor for the frame. A committed cursor stays gated (scrolling
+		// would displace it), and unequal heights can't be a pure shift.
 		const shift =
 			process.env['NUVIN_INK_NO_SCROLL_OPT'] === '1' ||
 			activeCursor !== undefined ||
-			hasTrailingNewline ||
-			previousOutput.endsWith('\n') ||
-			visibleCount !== previousVisible
+			visibleCount !== previousVisible ||
+			blockTop === undefined
 				? undefined
 				: detectScrollShift(prevVisible, nextVisible);
 
 		let diffPrevious = previousLines;
 		let loopStart = 0;
+		let scrolled = false;
 
 		if (shift) {
 			const k = Math.abs(shift.rows);
@@ -796,25 +933,40 @@ const createIncremental = (
 					: [...blankLines(k), ...band.slice(0, band.length - k)];
 			const shiftedPrevious = [...prefix, ...shiftedBand, ...suffix];
 
-			buffer.push(
-				setScrollRegion(start, end),
-				cursorToRow(start),
-				shift.rows > 0 ? `\u001B[${k}M` : `\u001B[${k}L`,
-				resetScrollRegion,
-				cursorToRow(start),
-			);
-			diffPrevious = shiftedPrevious;
-			loopStart = start;
-		} else if (visibleCount < previousVisible) {
-			// Clear extra lines if the current content's line count is lower than the previous.
-			const previousHadTrailingNewline = previousOutput.endsWith('\n');
-			const extraSlot = previousHadTrailingNewline ? 1 : 0;
-			buffer.push(
-				ansiEscapes.eraseLines(previousVisible - visibleCount + extraSlot),
-				ansiEscapes.cursorUp(visibleCount),
-			);
-		} else {
-			buffer.push(ansiEscapes.cursorUp(previousLines.length - 1));
+			// Frame-relative band rows → absolute screen rows. blockTop is
+			// defined here because the shift gate already required it.
+			const absStart = blockTop! + start;
+			const absEnd = blockTop! + end;
+			const rowLimit = terminalRowLimit();
+			if (
+				rowLimit === undefined ||
+				(absStart >= 0 && absEnd <= rowLimit && absStart < absEnd)
+			) {
+				buffer.push(
+					setScrollRegion(absStart, absEnd),
+					cursorToRow(absStart),
+					shift.rows > 0 ? `\u001B[${k}M` : `\u001B[${k}L`,
+					resetScrollRegion,
+					cursorToRow(absStart),
+				);
+				diffPrevious = shiftedPrevious;
+				loopStart = start;
+				scrolled = true;
+			}
+		}
+
+		if (!scrolled) {
+			if (visibleCount < previousVisible) {
+				// Clear extra lines if the current content's line count is lower than the previous.
+				const previousHadTrailingNewline = previousOutput.endsWith('\n');
+				const extraSlot = previousHadTrailingNewline ? 1 : 0;
+				buffer.push(
+					ansiEscapes.eraseLines(previousVisible - visibleCount + extraSlot),
+					ansiEscapes.cursorUp(visibleCount),
+				);
+			} else {
+				buffer.push(ansiEscapes.cursorUp(previousLines.length - 1));
+			}
 		}
 
 		for (let i = loopStart; i < visibleCount; i++) {
@@ -844,7 +996,16 @@ const createIncremental = (
 		const cursorSuffix = buildCursorSuffix(outputCursorRow, activeCursor);
 		buffer.push(cursorSuffix);
 
-		stream.write(buffer.join(''));
+		// Anchor a cursor-position query on top of the write when we don't yet
+		// know the block's absolute top row. The query is appended to the same
+		// write so the reply describes the post-write (block-bottom) row.
+		const anchorQuery = maybeArmAnchorQuery(nextLines.length);
+		trackedWrite(buffer.join('') + anchorQuery);
+		if (anchorQuery) {
+			sealAnchorQuery();
+		}
+
+		updateFrameTopRow(nextLines.length);
 
 		cursorWasShown = activeCursor !== undefined;
 		previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
@@ -878,7 +1039,7 @@ const createIncremental = (
 		);
 		const cursorSuffix = buildCursorSuffix(outputCursorRow, activeCursor);
 
-		stream.write(
+		trackedWrite(
 			returnPrefix +
 				ansiEscapes.eraseLines(
 					getEraseLineCount(previousLines.length, options),
@@ -887,6 +1048,7 @@ const createIncremental = (
 				cursorSuffix,
 		);
 
+		updateFrameTopRow(nextLines.length);
 		previousOutput = str;
 		previousLines = nextLines;
 		previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
@@ -909,7 +1071,7 @@ const createIncremental = (
 		bumpGeneration();
 		restoreTerminalModes();
 		if (paintedSeekViewport) {
-			stream.write(eraseDisplayHome);
+			trackedWrite(eraseDisplayHome);
 			clearSeekState();
 			return;
 		}
@@ -919,13 +1081,14 @@ const createIncremental = (
 			previousLines.length,
 			previousCursorPosition,
 		);
-		stream.write(
+		trackedWrite(
 			prefix +
 				ansiEscapes.eraseLines(
 					getEraseLineCount(previousLines.length, options),
 				),
 		);
 		clearSeekState();
+		resetAnchor();
 	};
 
 	render.done = () => {
@@ -935,10 +1098,11 @@ const createIncremental = (
 		try {
 			if (paintedSeekViewport) {
 				if (showCursor) {
-					stream.write(showCursorEscape);
+					trackedWrite(showCursorEscape);
 				}
 
 				clearSeekState();
+				resetAnchor();
 				cursorPosition = undefined;
 				if (!showCursor) {
 					cliCursor.show(stream);
@@ -954,10 +1118,11 @@ const createIncremental = (
 				previousCursorPosition,
 			);
 			if (returnPrefix || showCursor) {
-				stream.write(returnPrefix + (showCursor ? showCursorEscape : ''));
+				trackedWrite(returnPrefix + (showCursor ? showCursorEscape : ''));
 			}
 
 			clearSeekState();
+			resetAnchor();
 			cursorPosition = undefined;
 
 			if (!showCursor) {
@@ -966,6 +1131,7 @@ const createIncremental = (
 			}
 		} catch {
 			clearSeekState();
+			resetAnchor();
 			cursorPosition = undefined;
 		}
 	};
@@ -980,6 +1146,7 @@ const createIncremental = (
 		cursorWasShown = false;
 		cursorDirty = false;
 		invalidatePhysical();
+		resetAnchor();
 	};
 
 	render.sync = (str: string, physical?: PhysicalFrame) => {
@@ -1015,13 +1182,17 @@ const createIncremental = (
 		previousIdentities = [];
 		paintedSeekViewport = false;
 		invalidatePhysical();
+		// Sync() is called after the caller cleared the terminal and wrote the
+		// frame at the top-left (home), so the block's top row is row 0.
+		resetAnchor();
+		frameTopRow = 0;
 
 		if (!activeCursor && cursorWasShown) {
-			stream.write(hideCursorEscape);
+			trackedWrite(hideCursorEscape);
 		}
 
 		if (activeCursor) {
-			stream.write(buildCursorSuffix(getOutputCursorRow(lines), activeCursor));
+			trackedWrite(buildCursorSuffix(getOutputCursorRow(lines), activeCursor));
 		}
 
 		previousCursorPosition = activeCursor ? {...activeCursor} : undefined;
@@ -1033,6 +1204,10 @@ const createIncremental = (
 		cursorDirty = true;
 	};
 
+	render.noteCursorRow = (row: number) => {
+		noteAnchorRow(row);
+	};
+	render.hasPendingAnchorQuery = () => pendingAnchorQuery;
 	render.isCursorDirty = () => cursorDirty;
 	render.willRender = (str: string, context?: PaintContext) => {
 		if (isSeekViewport(context)) {

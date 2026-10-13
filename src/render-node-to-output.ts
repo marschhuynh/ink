@@ -1,4 +1,3 @@
-import widestLine from 'widest-line';
 import indentString from 'indent-string';
 import Yoga from 'yoga-layout';
 import wrapText from './wrap-text.js';
@@ -220,7 +219,7 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 
 			if (text.length > 0) {
 				markPainted(child, paintState);
-				const currentWidth = widestLine(text);
+				const currentWidth = output.measureWidestLine(text);
 				const maxWidth = getMaxWidth(childYoga);
 
 				if (currentWidth > maxWidth) {
@@ -460,7 +459,7 @@ const renderNodeToOutput = (
 			let text = squashTextNodes(node);
 
 			if (text.length > 0) {
-				const currentWidth = widestLine(text);
+				const currentWidth = output.measureWidestLine(text);
 				const maxWidth = getMaxWidth(yogaNode);
 
 				if (currentWidth > maxWidth) {

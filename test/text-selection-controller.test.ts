@@ -244,3 +244,27 @@ test('unregistering a stacked provider clears a live selection', t => {
 	t.is(controller.getSnapshot().text, '');
 	t.is(controller.getSnapshot().anchor, null);
 });
+
+// Newly authored reconstruction regression, not a recovered upstream test.
+test('reconstruction: a finished selection fills previously uncaptured middle rows', t => {
+	const controller = new TextSelectionController();
+	let scrollY = 0;
+	controller.setViewportProvider(() => ({
+		top: 0,
+		left: 0,
+		width: 10,
+		height: 1,
+		scrollY,
+	}));
+	controller.captureRows(['first']);
+	controller.start({x: 0, y: 0});
+	scrollY = 2;
+	controller.captureRows(['last']);
+	controller.update({x: 4, y: 0});
+	controller.finish();
+	t.is(controller.getSnapshot().text, 'first\n\nlast');
+	scrollY = 1;
+	controller.captureRows(['middle']);
+	t.is(controller.getSnapshot().text, 'first\nmiddle\nlast');
+	t.deepEqual(controller.getPaintSpans(10, 1), [{y: 0, x1: 0, x2: 6}]);
+});

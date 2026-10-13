@@ -15,6 +15,8 @@ const cursorVisibility = new RegExp(
 	'g',
 );
 
+// Fullscreen fixtures below now supply rows: published 7.7.5-alpha declines
+// absolute scroll-region coordinates when terminal height/anchor is unknown.
 const secondWrite = (stdout: ReturnType<typeof createStdout>): string =>
 	stdout.get();
 
@@ -298,6 +300,8 @@ const assertBoundedFooterShift = (
 	nextFrame: string[],
 ): void => {
 	const stdout = createStdout();
+	// 7.7.5-alpha requires a measured or fullscreen absolute anchor.
+	stdout.rows = previous.length;
 	const render = logUpdate.create(stdout, {incremental: true});
 	render(previous.join('\n'));
 	render(nextFrame.join('\n'));
@@ -325,6 +329,7 @@ const assertBoundedFooterShift = (
 	t.is(result.cursorColumn, 0);
 
 	const positional = createStdout();
+	positional.rows = previous.length;
 	const positionalRender = logUpdate.create(positional, {incremental: true});
 	process.env['NUVIN_INK_NO_SCROLL_OPT'] = '1';
 	try {
@@ -402,6 +407,7 @@ test('incremental scroll region - bounded shift down never moves footer rows', t
 
 test('incremental scroll region - shift up rewrites only edge lines', t => {
 	const stdout = createStdout();
+	stdout.rows = 6;
 	const render = logUpdate.create(stdout, {incremental: true});
 
 	render(['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'].join('\n'));
@@ -452,6 +458,7 @@ test('incremental scroll region - non-fullscreen shift preserves rows below the 
 
 test('incremental scroll region - shift down emits insert-lines and rewrites top edge', t => {
 	const stdout = createStdout();
+	stdout.rows = 6;
 	const render = logUpdate.create(stdout, {incremental: true});
 
 	render(['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'].join('\n'));
@@ -476,6 +483,7 @@ test('incremental scroll region - shift down emits insert-lines and rewrites top
 
 test('incremental scroll region - centered interior shift does not IL/DL at frame top', t => {
 	const stdout = createStdout();
+	stdout.rows = 10;
 	const render = logUpdate.create(stdout, {incremental: true});
 
 	render(
@@ -509,6 +517,7 @@ test('incremental scroll region - centered interior shift does not IL/DL at fram
 
 test('incremental scroll region - centered interior shift down emits insert-lines and restores footer', t => {
 	const stdout = createStdout();
+	stdout.rows = 10;
 	const render = logUpdate.create(stdout, {incremental: true});
 
 	render(
@@ -537,6 +546,7 @@ test('incremental scroll region - centered interior shift down emits insert-line
 
 test('incremental scroll region - changed prefix rejects shift and rewrites chrome', t => {
 	const stdout = createStdout();
+	stdout.rows = 10;
 	const render = logUpdate.create(stdout, {incremental: true});
 
 	render(
@@ -558,6 +568,7 @@ test('incremental scroll region - changed prefix rejects shift and rewrites chro
 
 test('incremental scroll region - below-threshold change stays byte-identical to the legacy diff', t => {
 	const stdout = createStdout();
+	stdout.rows = 6;
 	const render = logUpdate.create(stdout, {incremental: true});
 
 	render(['a', 'b', 'c', 'd', 'e', 'f'].join('\n'));
@@ -573,6 +584,7 @@ test('incremental scroll region - below-threshold change stays byte-identical to
 
 test('incremental scroll region - changed footer rejects an unsafe bounded shift', t => {
 	const stdout = createStdout();
+	stdout.rows = 11;
 	const render = logUpdate.create(stdout, {incremental: true});
 	const previous = [
 		'HEAD',
@@ -616,6 +628,7 @@ test('incremental scroll region - changed footer rejects an unsafe bounded shift
 
 test('incremental scroll region - full-frame shift keeps optimized bounded bytes', t => {
 	const stdout = createStdout();
+	stdout.rows = 6;
 	const render = logUpdate.create(stdout, {incremental: true});
 	render(['r1', 'r2', 'r3', 'r4', 'r5', 'r6'].join('\n'));
 	render(['r2', 'r3', 'r4', 'r5', 'r6', 'r7'].join('\n'));
@@ -639,6 +652,7 @@ test('incremental scroll region - full-frame shift keeps optimized bounded bytes
 
 test('incremental scroll region - bounded shift cache remains surgical on the next update', t => {
 	const stdout = createStdout();
+	stdout.rows = 11;
 	const render = logUpdate.create(stdout, {incremental: true});
 	const previous = [
 		'HEAD',
@@ -698,6 +712,7 @@ test('incremental scroll region - bounded shift cache remains surgical on the ne
 
 test('incremental scroll region - bounded shift preserves a later committed cursor', t => {
 	const stdout = createStdout();
+	stdout.rows = 11;
 	const render = logUpdate.create(stdout, {incremental: true});
 	const previous = [
 		'HEAD',
@@ -756,6 +771,7 @@ test('incremental scroll region - bounded shift preserves a later committed curs
 
 test('incremental scroll region - every installed margin resets in the same write', t => {
 	const stdout = createStdout();
+	stdout.rows = 10;
 	const render = logUpdate.create(stdout, {incremental: true});
 	render(
 		['HEAD', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'FOOT'].join('\n'),
@@ -782,6 +798,7 @@ test('incremental scroll region - every installed margin resets in the same writ
 
 test('incremental scroll region - cache correctness after shift', t => {
 	const stdout = createStdout();
+	stdout.rows = 6;
 	const render = logUpdate.create(stdout, {incremental: true});
 
 	render(['r1', 'r2', 'r3', 'r4', 'r5', 'r6'].join('\n'));
@@ -808,6 +825,7 @@ test('incremental scroll region - cache correctness after shift', t => {
 
 test('incremental scroll region - committed active cursor rejects a shift-shaped update', t => {
 	const stdout = createStdout();
+	stdout.rows = 6;
 	const render = logUpdate.create(stdout, {incremental: true});
 	const previous = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'];
 	const shifted = ['r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
@@ -822,6 +840,7 @@ test('incremental scroll region - committed active cursor rejects a shift-shaped
 
 test('incremental scroll region - height change skips scroll path', t => {
 	const stdout = createStdout();
+	stdout.rows = 6;
 	const render = logUpdate.create(stdout, {incremental: true});
 
 	render(['r1', 'r2', 'r3', 'r4', 'r5', 'r6'].join('\n'));
@@ -833,6 +852,7 @@ test('incremental scroll region - height change skips scroll path', t => {
 
 test('incremental scroll region - cache reset rejects shifts until a new baseline exists', t => {
 	const stdout = createStdout();
+	stdout.rows = 6;
 	const render = logUpdate.create(stdout, {incremental: true});
 	const previous = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'];
 	const shifted = ['r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
@@ -857,6 +877,7 @@ test('incremental scroll region - escape hatch keeps legacy bytes for a pure shi
 	process.env['NUVIN_INK_NO_SCROLL_OPT'] = '1';
 	try {
 		const stdout = createStdout();
+		stdout.rows = 6;
 		const render = logUpdate.create(stdout, {incremental: true});
 		render(['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'].join('\n'));
 		render(['row 3', 'row 4', 'row 5', 'row 6', 'new 7', 'new 8'].join('\n'));

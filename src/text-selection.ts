@@ -77,6 +77,7 @@ export function getSelectionSpans(
 	anchor: TextSelectionPoint,
 	focus: TextSelectionPoint,
 	getRow: RowLookup,
+	rowBounds?: {startY: number; endY: number},
 ): TextSelectionSpan[] {
 	const {start, end} = normalizeSelection(anchor, focus);
 	if (start.x === end.x && start.y === end.y) {
@@ -85,7 +86,9 @@ export function getSelectionSpans(
 
 	const spans: TextSelectionSpan[] = [];
 
-	for (let {y} = start; y <= end.y; y++) {
+	const firstY = rowBounds ? Math.max(start.y, rowBounds.startY) : start.y;
+	const lastY = rowBounds ? Math.min(end.y, rowBounds.endY - 1) : end.y;
+	for (let y = firstY; y <= lastY; y++) {
 		const rowEnd = getRowEnd(getRow(y) ?? {text: ''});
 		let x1 = y === start.y ? start.x : 0;
 		let x2 = y === end.y ? end.x : rowEnd;

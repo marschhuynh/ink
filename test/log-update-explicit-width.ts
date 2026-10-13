@@ -203,6 +203,8 @@ test('shrink, grow, and blank rows transform only written slices', t => {
 
 test('scroll shift up transforms only exposed edges', t => {
 	const {stdout, inputs, render} = createInstrumented({incremental: true});
+	// Published scroll optimization requires a fullscreen or measured anchor.
+	stdout.rows = 6;
 	const previous = ['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'];
 	const next = ['row 3', 'row 4', 'row 5', 'row 6', 'new 7', '界'];
 	t.true(render(previous.join('\n')));
@@ -225,6 +227,8 @@ test('scroll shift up transforms only exposed edges', t => {
 
 test('scroll shift down transforms only exposed edges', t => {
 	const {stdout, inputs, render} = createInstrumented({incremental: true});
+	// Published scroll optimization requires a fullscreen or measured anchor.
+	stdout.rows = 6;
 	const previous = ['row 1', 'row 2', 'row 3', 'row 4', 'row 5', 'row 6'];
 	const next = ['界', 'new 1', 'row 1', 'row 2', 'row 3', 'row 4'];
 	t.true(render(previous.join('\n')));
@@ -247,6 +251,8 @@ test('scroll shift down transforms only exposed edges', t => {
 
 test('sticky chrome scroll keeps footer rows out of the hook', t => {
 	const {stdout, inputs, render} = createInstrumented({incremental: true});
+	// Published scroll optimization requires a fullscreen or measured anchor.
+	stdout.rows = 11;
 	const previous = [
 		'HEAD',
 		'b1',
@@ -423,6 +429,9 @@ for (const incremental of [false, true]) {
 	test(`${mode} paired ASCII and Unicode byte and work accounting`, t => {
 		const plain = createStdout();
 		const encoded = createStdout();
+		// These paired frames occupy the whole terminal in the scroll phase.
+		plain.rows = 6;
+		encoded.rows = 6;
 		const inputs: string[] = [];
 		const encode = createExplicitWidthEncoder();
 		const plainRender = logUpdate.create(plain, {

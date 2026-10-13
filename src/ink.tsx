@@ -812,12 +812,16 @@ export default class Ink {
 					onExit={this.handleAppExit}
 					onWaitUntilRenderFlush={this.waitUntilRenderFlush}
 					onTerminalResponse={
-						this.widthDetection || this.kittyAutoFlags
+						this.widthDetection ||
+						this.kittyAutoFlags ||
+						this.options.incrementalRendering
 							? this.handleTerminalResponse
 							: undefined
 					}
 					isTerminalResponsePending={
-						this.widthDetection || this.kittyAutoFlags
+						this.widthDetection ||
+						this.kittyAutoFlags ||
+						this.options.incrementalRendering
 							? this.isTerminalResponsePending
 							: undefined
 					}
@@ -1859,7 +1863,11 @@ export default class Ink {
 	}
 
 	private isTerminalResponsePending(): boolean {
-		return Boolean(this.widthDetection?.pending || this.cancelKittyDetection);
+		return Boolean(
+			this.widthDetection?.pending ||
+			this.cancelKittyDetection ||
+			this.log.hasPendingAnchorQuery?.(),
+		);
 	}
 
 	private handleInputReady(
@@ -1897,7 +1905,19 @@ export default class Ink {
 
 	private handleTerminalResponse(response: TerminalResponse): void {
 		if (response.type === 'cursor-position') {
-			this.widthDetection?.accept(response);
+			// Width detection is phase-validated and time-critical (a bounded
+			// startup negotiation), so it claims the reply first. A stray reply
+			// during its off-phases is rejected by accept(); a stolen
+			// scroll-anchor reply just triggers a bounded re-query.
+			if (this.widthDetection?.pending) {
+				this.widthDetection.accept(response);
+				return;
+			}
+
+			if (this.log.hasPendingAnchorQuery?.()) {
+				this.log.noteCursorRow?.(response.row);
+			}
+
 			return;
 		}
 		if (

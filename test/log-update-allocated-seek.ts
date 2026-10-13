@@ -204,17 +204,22 @@ test('inherited style carry repaints dependents with the same logical text', asy
 	t.true(cellAt(terminal, 1, 0).isBgDefault());
 });
 
-test('unsupported control in the last row emits nothing and does not acquire DECAWM', t => {
+// 7.7.5-alpha recovers late invalid row content rather than aborting the frame.
+test('unsupported control in the last row recovers only that row', async t => {
 	const {stdout, log} = createSeekLog();
 	t.true(log('TOP\nMIDDLE\nBOTTOM', context));
 	const before = stdout.getWrites().length;
-	const physical = log.getPhysicalFrame();
-	t.throws(() => {
-		log('TOP\nMIDDLE\nok\u001B[2Aunsafe', context);
-	});
-	t.is(stdout.getWrites().length, before);
-	t.false(stdout.getWrites().slice(before).join('').includes(decawmOff));
-	t.deepEqual(log.getPhysicalFrame(), physical);
+	t.true(log('TOP\nMIDDLE\nok\u001B[2Aunsafe', context));
+	const delta = stdout.getWrites().slice(before).join('');
+	t.true(delta.includes(decawmOff));
+	t.true(delta.includes(encodeSeekRow(prepareSeekRow('okunsafe', 8), 2, 8)));
+	t.false(delta.includes('TOP'));
+	t.false(delta.includes('MIDDLE'));
+	t.deepEqual(log.getPhysicalFrame()?.logicalRows, ['TOP', 'MIDDLE', 'okunsafe']);
+	const terminal = await replayWrites(t, stdout);
+	t.is(viewportLine(terminal, 0).trimEnd(), 'TOP');
+	t.is(viewportLine(terminal, 1).trimEnd(), 'MIDDLE');
+	t.is(viewportLine(terminal, 2), 'okunsafe');
 });
 
 test('zero-width fixture transitions keep allocated X and adjacent rows', async t => {

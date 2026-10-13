@@ -1,5 +1,7 @@
 import stringWidth from 'string-width';
 import {readTerminalControl} from './terminal-control.js';
+import {tokenizeAnsi} from './ansi-tokenizer.js';
+import sanitizeAnsi from './sanitize-ansi.js';
 
 export type SeekPart =
 	| {kind: 'control'; raw: string}
@@ -45,6 +47,7 @@ type RowItem = ControlItem | GraphemeItem;
 type ParsedRow = {
 	logical: string;
 	items: readonly RowItem[];
+	recovered?: boolean;
 };
 
 const segmenter = new Intl.Segmenter(undefined, {granularity: 'grapheme'});
@@ -69,8 +72,12 @@ const isAscii = (text: string): boolean => {
 	return true;
 };
 
+export class SeekRowContentError extends Error {
+	override name = 'SeekRowContentError';
+}
+
 const fail = (message: string): never => {
-	throw new Error(message);
+	throw new SeekRowContentError(message);
 };
 
 const isSgr = (raw: string): boolean => {
@@ -131,7 +138,7 @@ const tokenize = (row: string): Array<ControlItem | TextToken> => {
 		if (isControlIntroducer(code)) {
 			const control = readTerminalControl(row, index);
 			if (control === undefined) {
-				throw new Error('Malformed terminal control in seek row');
+				throw new SeekRowContentError('Malformed terminal control in seek row');
 			}
 
 			const allowedSgr = control.kind === 'csi' && isSgr(control.raw);
@@ -341,24 +348,82 @@ export function prepareSeekRow(row: string, columns: number): PreparedSeekRow {
 	return materialize(parseRow(row), columns, '', '');
 }
 
+// A late transform can still introduce invalid row content after layout.
+// Recover only content validation errors, never terminal I/O or other failures.
+const parseFrameRow = (row: string): ParsedRow => {
+	try {
+		return parseRow(row);
+	} catch (error) {
+		if (!(error instanceof SeekRowContentError)) {
+			throw error;
+		}
+
+		const plain = tokenizeAnsi(sanitizeAnsi(row))
+			.filter(token => token.type === 'text')
+			.map(token => token.value)
+			.join('')
+			.replaceAll('\n', ' ')
+			.replaceAll('\t', '    ');
+		return {...parseRow(plain), recovered: true};
+	}
+};
+
+type CachedRow = {
+	parsed: ParsedRow;
+	materialized?: {
+		columns: number;
+		entrySgr: string;
+		entryLink: string;
+		row: PreparedSeekRow;
+		exitSgr: string;
+		exitLink: string;
+	};
+};
+
 export function createSeekPreparer(): SeekPreparer {
-	let cache = new Map<string, ParsedRow>();
+	let cache = new Map<string, CachedRow>();
 	return {
 		prepareFrame(text: string, columns: number) {
 			const rows = text.split('\n');
-			const nextCache = new Map<string, ParsedRow>();
+			const nextCache = new Map<string, CachedRow>();
 			const prepared: PreparedSeekRow[] = [];
 			let sgr = '';
 			let link = '';
 			for (const row of rows) {
-				let parsed = nextCache.get(row) ?? cache.get(row);
-				if (parsed === undefined) {
-					parsed = parseRow(row);
+				let cached = nextCache.get(row) ?? cache.get(row);
+				cached ??= {parsed: parseFrameRow(row)};
+				nextCache.set(row, cached);
+				const {parsed} = cached;
+				// Recovery discards the entire row's rendition, including closes and
+				// resets. Drop inherited state too so it cannot leak into later rows.
+				if (parsed.recovered) {
+					sgr = '';
+					link = '';
 				}
 
-				nextCache.set(row, parsed);
-				prepared.push(materialize(parsed, columns, sgr, link));
-				({sgr, link} = applyRendition(parsed.items, sgr, link));
+				// Most frames change only a few rows. Reuse clipping, identity and
+				// exit rendition too; source-only parsing reuse still walks every cell.
+				let {materialized} = cached;
+				if (
+					materialized?.columns !== columns ||
+					materialized.entrySgr !== sgr ||
+					materialized.entryLink !== link
+				) {
+					const exit = applyRendition(parsed.items, sgr, link);
+					materialized = {
+						columns,
+						entrySgr: sgr,
+						entryLink: link,
+						row: materialize(parsed, columns, sgr, link),
+						exitSgr: exit.sgr,
+						exitLink: exit.link,
+					};
+					cached.materialized = materialized;
+				}
+
+				prepared.push(materialized.row);
+				sgr = materialized.exitSgr;
+				link = materialized.exitLink;
 			}
 
 			cache = nextCache;

@@ -3097,6 +3097,10 @@ Seeking can restore allocated cursor positions and overwrite excess paint. It ca
 
 Seek frames skip the existing scroll-region shift optimization. Unchanged rows are still skipped. Extra absolute seeks, styled prefills, and full-viewport resize repaints are intentional costs, not a performance claim.
 
+Text sanitization removes unsupported terminal controls before layout, normalizes CRLF/CR to LF, and replaces malformed UTF-16. Styling and OSC 8 hyperlinks are preserved; tabs retain the existing expansion to spaces. If invalid content still reaches a seek frame (for example, from a late transform), only that row falls back to plain text and inherited styling/link state is reset. The next frame can render normally. Terminal write failures still surface through `waitUntilExit()`.
+
+Seek preparation caches both parsed and prepared rows for the current frame. Prepared rows are reused only when the source, width, entry styling, and hyperlink state match. The cache retains at most one prepared variant per distinct source row, dropping rows absent from the next frame. Run `node --import=tsx benchmark/seek-preparation.ts` after building to measure sparse and full-frame preparation separately.
+
 Before restoring a fullscreen seek frame after ordinary or Static output, Ink advances a blank viewport so that output can move into primary-screen history rather than being immediately overwritten at home. That conservative first version may add extra blank lines to primary-screen history around external output.
 
 Physical terminal acceptance for this fallback is still pending. Completing source tests does not qualify a terminal. A failed OSC 66 probe does not by itself establish seek support.

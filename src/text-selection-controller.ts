@@ -5,6 +5,7 @@ import stringWidth from 'string-width';
 import {
 	extractTextFromRows,
 	getSelectionSpans,
+	sliceSelectableCells,
 	type SelectionRow,
 	type TextSelectionPoint,
 	type TextSelectionSpan,
@@ -64,6 +65,7 @@ Selection actions plus an imperative snapshot read. Unlike the snapshot from
 `useTextSelection()`, holding this handle does NOT subscribe the component to
 selection changes — use it where selection state is only needed at event time
 (mouse bridges, key handlers) so drags never re-render the host component.
+Calling `getSnapshot()` resolves text across the full selection on that read.
 */
 export type TextSelectionHandle = TextSelectionActions & {
 	getSnapshot: () => TextSelectionSnapshot;
@@ -90,6 +92,7 @@ export class TextSelectionController {
 	private focus: TextSelectionPoint | null = null;
 	private isDragging = false;
 	private text = '';
+	private textDirty = false;
 	private readonly rowCache = new Map<number, SelectionRow>();
 	// Stack of registered providers; the last entry is active. Stacking lets
 	// an overlay (tool detail modal) take over selection while mounted and
@@ -116,6 +119,10 @@ export class TextSelectionController {
 	};
 
 	getSnapshot = (): TextSelectionSnapshot => {
+		if (this.textDirty && this.recomputeText()) {
+			this.snapshot = undefined;
+		}
+
 		this.snapshot ??= {
 			anchor: this.anchor,
 			focus: this.focus,
@@ -167,7 +174,7 @@ export class TextSelectionController {
 		this.anchor = point;
 		this.focus = point;
 		this.isDragging = true;
-		this.recomputeText();
+		this.textDirty = true;
 		this.emit();
 		this.onInvalidate?.();
 	};
@@ -180,9 +187,8 @@ export class TextSelectionController {
 		const point = this.toContentPoint(screenPoint);
 		const focusChanged = this.focus?.x !== point.x || this.focus.y !== point.y;
 		this.focus = point;
-		const textChanged = this.recomputeText();
-
-		if (focusChanged || textChanged) {
+		if (focusChanged) {
+			this.textDirty = true;
 			this.emit();
 			this.onInvalidate?.();
 		}
@@ -204,6 +210,7 @@ export class TextSelectionController {
 		this.focus = null;
 		this.isDragging = false;
 		this.text = '';
+		this.textDirty = false;
 		this.rowCache.clear();
 
 		if (hadSelection) {
@@ -218,10 +225,10 @@ export class TextSelectionController {
 	— it runs during a render pass and must not schedule another render.
 
 	While dragging, cache entries update freely (auto-scroll depends on it).
-	After `finish()`, the cache is frozen: existing entries are never
-	overwritten, so extracted text is immutable. If a visible row inside the
-	selected range no longer matches its frozen entry (content reflowed
-	underneath the selection), the selection auto-clears.
+	After `finish()`, existing entries are frozen and never overwritten; rows
+	that were not captured during the gesture may still fill their gaps. If a
+	visible row inside the selected range no longer matches its frozen entry
+	(content reflowed underneath the selection), the selection auto-clears.
 	*/
 	captureRows = (
 		plainRows: readonly string[],
@@ -253,12 +260,17 @@ export class TextSelectionController {
 		}
 
 		let mismatch = false;
+		let selectedRowsChanged = false;
 		const range = hasSelection
 			? (() => {
 					const [a, b] = [this.anchor!, this.focus!];
 					return a.y <= b.y ? {min: a.y, max: b.y} : {min: b.y, max: a.y};
 				})()
 			: undefined;
+
+		const selectionHasExtent =
+			hasSelection &&
+			(this.anchor!.x !== this.focus!.x || this.anchor!.y !== this.focus!.y);
 
 		for (let y = top; y < bottom; y++) {
 			const contentY = viewport.scrollY + (y - viewport.top);
@@ -285,6 +297,18 @@ export class TextSelectionController {
 			}
 
 			this.rowCache.set(contentY, row);
+			if (
+				selectionHasExtent &&
+				range &&
+				contentY >= range.min &&
+				contentY <= range.max &&
+				selectedRowTextChanged(this.anchor!, this.focus!, contentY, {
+					previous: existing,
+					next: row,
+				})
+			) {
+				selectedRowsChanged = true;
+			}
 		}
 
 		if (mismatch) {
@@ -294,20 +318,15 @@ export class TextSelectionController {
 			this.focus = null;
 			this.isDragging = false;
 			this.text = '';
+			this.textDirty = false;
 			this.rowCache.clear();
 			this.snapshot = undefined;
 			this.scheduleNotify(true);
 			return;
 		}
 
-		if (hasSelection && !frozen && this.recomputeText()) {
-			this.scheduleNotify(false);
-		} else if (
-			hasSelection &&
-			frozen &&
-			this.text.length === 0 && // Rows may have arrived only after the gesture ended.
-			this.recomputeText()
-		) {
+		if (selectedRowsChanged) {
+			this.textDirty = true;
 			this.scheduleNotify(false);
 		}
 	};
@@ -326,15 +345,19 @@ export class TextSelectionController {
 		}
 
 		const {viewport} = this.resolveViewport();
-		const spans = getSelectionSpans(this.anchor, this.focus, y =>
-			this.rowCache.get(y),
-		);
-
 		const left = Math.max(0, viewport.left);
 		const right = Math.min(outputWidth, viewport.left + viewport.width);
 		const screenTop = Math.max(0, viewport.top);
 		const screenBottom = Math.min(outputHeight, viewport.top + viewport.height);
 
+		const contentStartY = viewport.scrollY + (screenTop - viewport.top);
+		const contentEndY = viewport.scrollY + (screenBottom - viewport.top);
+		const spans = getSelectionSpans(
+			this.anchor,
+			this.focus,
+			y => this.rowCache.get(y),
+			{startY: contentStartY, endY: contentEndY},
+		);
 		const result: TextSelectionSpan[] = [];
 
 		for (const span of spans) {
@@ -412,6 +435,7 @@ export class TextSelectionController {
 					)
 				: '';
 
+		this.textDirty = false;
 		if (next === this.text) {
 			return false;
 		}
@@ -428,8 +452,6 @@ export class TextSelectionController {
 	}
 
 	private scheduleNotify(invalidate: boolean): void {
-		this.snapshot = undefined;
-
 		if (this.notifyScheduled) {
 			return;
 		}
@@ -498,4 +520,48 @@ const sliceMask = (
 	return width === Number.POSITIVE_INFINITY
 		? mask.slice(left)
 		: mask.slice(left, left + width);
+};
+
+const rowsEqual = (
+	first: SelectionRow | undefined,
+	second: SelectionRow,
+): boolean => {
+	if (first?.text !== second.text) {
+		return false;
+	}
+
+	const firstMask = first.mask;
+	const secondMask = second.mask;
+	if (firstMask === secondMask) {
+		return true;
+	}
+
+	if (firstMask?.length !== secondMask?.length) {
+		return false;
+	}
+
+	return (
+		firstMask?.every((value, index) => value === secondMask?.[index]) ?? false
+	);
+};
+
+const selectedRowTextChanged = (
+	anchor: TextSelectionPoint,
+	focus: TextSelectionPoint,
+	y: number,
+	rows: {previous: SelectionRow | undefined; next: SelectionRow},
+): boolean => {
+	if (rowsEqual(rows.previous, rows.next)) {
+		return false;
+	}
+
+	const selectedText = (row: SelectionRow | undefined): string => {
+		const resolvedRow = row ?? {text: ''};
+		const span = getSelectionSpans(anchor, focus, () => resolvedRow, {
+			startY: y,
+			endY: y + 1,
+		})[0];
+		return span ? sliceSelectableCells(resolvedRow, span.x1, span.x2) : '';
+	};
+	return selectedText(rows.previous) !== selectedText(rows.next);
 };

@@ -1,8 +1,10 @@
 import stringWidth from 'string-width';
+import widestLine from 'widest-line';
 import {
 	type StyledChar,
+	ansiCodesToString,
+	diffAnsiCodes,
 	styledCharsFromTokens,
-	styledCharsToString,
 	tokenize,
 } from '@alcalzone/ansi-tokenize';
 import {type OutputTransformer} from './render-node-to-output.js';
@@ -18,6 +20,7 @@ Used to generate the final output of all nodes before writing it to actual outpu
 type Options = {
 	width: number;
 	height: number;
+	caches?: OutputCaches;
 };
 
 type Operation = WriteOperation | ClipOperation | UnclipOperation;
@@ -132,10 +135,80 @@ const trimTrailingSpaces = (
 	return line.slice(0, end);
 };
 
-class OutputCaches {
+const stylesEqual = (
+	a: StyledChar['styles'],
+	b: StyledChar['styles'],
+): boolean => {
+	if (a === b) {
+		return true;
+	}
+
+	if (a.length !== b.length) {
+		return false;
+	}
+
+	for (let index = 0; index < a.length; index++) {
+		if (a[index] !== b[index]) {
+			return false;
+		}
+	}
+
+	return true;
+};
+
+// Same output as styledCharsToString but only pays diffAnsiCodes + Set
+// allocations at real style boundaries. Transcript rows are mostly long
+// style-homogeneous runs (padding spaces, uniformly styled text), so the
+// per-cell diff is almost always a no-op — element-equal styles guarantee
+// diffAnsiCodes emits nothing, so skipping it preserves bytes exactly.
+const serializeRow = (chars: StyledChar[]): string => {
+	if (chars.length === 0) {
+		return '';
+	}
+
+	const first = chars[0]!;
+	let output = ansiCodesToString(first.styles) + first.value;
+	let active = first.styles;
+	for (let index = 1; index < chars.length; index++) {
+		const char = chars[index]!;
+		const styles = char.styles;
+		if (styles !== active && !stylesEqual(styles, active)) {
+			output += ansiCodesToString(diffAnsiCodes(active, styles));
+		}
+
+		active = styles;
+		output += char.value;
+	}
+
+	output += ansiCodesToString(diffAnsiCodes(active, []));
+	return output;
+};
+
+// Cache bounds: frame-stable line sets are small, but long sessions keep
+// producing distinct lines (scrolled-off transcript). FIFO-evict the oldest
+// quarter when full to bound memory while preserving temporal locality.
+const CACHE_CAP = 4096;
+const boundedSet = <K, V>(map: Map<K, V>, key: K, value: V): void => {
+	if (!map.has(key) && map.size >= CACHE_CAP) {
+		let removed = 0;
+		for (const oldest of map.keys()) {
+			map.delete(oldest);
+			if (++removed >= CACHE_CAP >> 2) {
+				break;
+			}
+		}
+	}
+
+	map.set(key, value);
+};
+
+export class OutputCaches {
 	widths = new Map<string, number>();
 	styledChars = new Map<string, StyledChar[]>();
 	completeLineWidths = new Map<string, number>();
+	// Whole-string widestLine results, keyed by squashed text — scroll frames
+	// re-measure identical rows.
+	widestLineWidths = new Map<string, number>();
 
 	getStyledChars(line: string, maxWidth?: number): StyledChar[] {
 		if (maxWidth !== undefined) {
@@ -158,7 +231,17 @@ class OutputCaches {
 		let cached = this.widths.get(text);
 		if (cached === undefined) {
 			cached = stringWidth(text);
-			this.widths.set(text, cached);
+			boundedSet(this.widths, text, cached);
+		}
+
+		return cached;
+	}
+
+	measureWidestLine(text: string): number {
+		let cached = this.widestLineWidths.get(text);
+		if (cached === undefined) {
+			cached = widestLine(text);
+			boundedSet(this.widestLineWidths, text, cached);
 		}
 
 		return cached;
@@ -187,13 +270,14 @@ export default class Output {
 	height: number;
 
 	private readonly operations: Operation[] = [];
-	private readonly caches: OutputCaches = new OutputCaches();
+	private readonly caches: OutputCaches;
 
 	constructor(options: Options) {
 		const {width, height} = options;
 
 		this.width = width;
 		this.height = height;
+		this.caches = options.caches ?? new OutputCaches();
 	}
 
 	write(
@@ -231,6 +315,12 @@ export default class Output {
 		});
 	}
 
+	// Widest visible line of `text`, memoized on the shared caches when the
+	// renderer injects them — scroll frames re-measure the same rows.
+	measureWidestLine(text: string): number {
+		return this.caches.measureWidestLine(text);
+	}
+
 	get(options?: GetOptions): {
 		output: string;
 		height: number;
@@ -238,28 +328,25 @@ export default class Output {
 		plainRows?: string[];
 		maskRows?: boolean[][];
 	} {
+		const needSelection = Boolean(options?.capturePlainRows ?? options?.paint);
 		// Initialize output array with a specific set of rows, so that margin/padding at the bottom is preserved
 		const output: StyledChar[][] = [];
 		// Selectability mask: true only for cells written with `selectable: true`
 		// (i.e. Text content). Padding, margin, borders, and untouched cells stay false.
 		const mask: boolean[][] = [];
 
+		const spaceCell: StyledChar = {
+			type: 'char',
+			value: ' ',
+			fullWidth: false,
+			styles: [],
+		};
 		for (let y = 0; y < this.height; y++) {
-			const row: StyledChar[] = [];
-			const maskRow: boolean[] = [];
-
-			for (let x = 0; x < this.width; x++) {
-				row.push({
-					type: 'char',
-					value: ' ',
-					fullWidth: false,
-					styles: [],
-				});
-				maskRow.push(false);
-			}
-
+			const row = new Array<StyledChar>(this.width).fill(spaceCell);
 			output.push(row);
-			mask.push(maskRow);
+			if (needSelection) {
+				mask.push(new Array<boolean>(this.width).fill(false));
+			}
 		}
 
 		const clips: Clip[] = [];
@@ -327,7 +414,7 @@ export default class Output {
 					const currentMaskLine = mask[y + offsetY];
 
 					// Line can be missing if `text` is taller than height of pre-initialized `this.output`
-					if (!currentLine || !currentMaskLine) {
+					if (!currentLine || (needSelection && !currentMaskLine)) {
 						continue;
 					}
 
@@ -369,12 +456,12 @@ export default class Output {
 
 							// Keep fully-inside lines untouched, including their ANSI bytes.
 							if (clipped) {
-								line = styledCharsToString(visibleCharacters);
+								line = serializeRow(visibleCharacters);
 							} else {
 								// The bounded lookahead proved this is the complete line.
 								// Reuse its geometry and styles, never a clipped prefix.
-								this.caches.completeLineWidths.set(line, column - x);
-								this.caches.styledChars.set(line, characters);
+								boundedSet(this.caches.completeLineWidths, line, column - x);
+								boundedSet(this.caches.styledChars, line, characters);
 							}
 						}
 					}
@@ -410,12 +497,16 @@ export default class Output {
 							1
 					) {
 						currentLine[offsetX - 1] = spaceCell;
-						currentMaskLine[offsetX - 1] = false;
+						if (currentMaskLine) {
+							currentMaskLine[offsetX - 1] = false;
+						}
 					}
 
 					for (const character of characters) {
 						currentLine[offsetX] = character;
-						currentMaskLine[offsetX] = selectable;
+						if (currentMaskLine) {
+							currentMaskLine[offsetX] = selectable;
+						}
 
 						// Determine printed width using string-width to align with measurement
 						const characterWidth = Math.max(
@@ -433,7 +524,9 @@ export default class Output {
 									styles: character.styles,
 								};
 								// Placeholder cells inherit the glyph's selectability.
-								currentMaskLine[offsetX + index] = selectable;
+								if (currentMaskLine) {
+									currentMaskLine[offsetX + index] = selectable;
+								}
 							}
 						}
 
@@ -442,7 +535,9 @@ export default class Output {
 
 					if (currentLine[offsetX]?.value === '') {
 						currentLine[offsetX] = spaceCell;
-						currentMaskLine[offsetX] = false;
+						if (currentMaskLine) {
+							currentMaskLine[offsetX] = false;
+						}
 					}
 
 					offsetY++;
@@ -452,33 +547,39 @@ export default class Output {
 
 		let plainRows: string[] | undefined;
 
-		if (options?.capturePlainRows ?? options?.paint) {
-			plainRows = output.map(row =>
-				row
-					.filter(item => item !== undefined)
-					.map(item => item.value)
-					.join('')
-					.trimEnd(),
-			);
+		if (needSelection) {
+			plainRows = output.map(row => {
+				let plain = '';
+				for (const character of row) {
+					// Sparse holes from out-of-bounds writes read as undefined.
+					plain += character?.value ?? '';
+				}
+
+				return plain.trimEnd();
+			});
 		}
 
 		// Generic final mutation point: sees the fully built grid (after
 		// wrapping, transforms, borders, backgrounds, and scroll clipping)
 		// before it is converted to ANSI.
-		options?.paint?.(output, plainRows!, mask);
+		options?.paint?.(output, plainRows!, mask ?? []);
 
 		let maxVisualWidth = 0;
 		const generatedOutput = output
 			.map(line => {
 				// See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
-				const lineWithoutEmptyItems = line.filter(item => item !== undefined);
+				// Writes past `width` extend rows with sparse holes; compact them out.
+				// Holes read as `undefined` but aren't in the StyledChar type.
+				const lineWithoutEmptyItems = (line as Array<StyledChar | undefined>).includes(undefined)
+					? line.filter(item => item !== undefined)
+					: line;
 				const trimmedLine = trimTrailingSpaces(
 					lineWithoutEmptyItems,
 					this.width,
 				);
 				maxVisualWidth = Math.max(maxVisualWidth, trimmedLine.length);
 
-				return styledCharsToString(trimmedLine);
+				return serializeRow(trimmedLine);
 			})
 			.join('\n');
 
@@ -487,8 +588,7 @@ export default class Output {
 			height: output.length,
 			maxVisualWidth,
 			plainRows,
-			maskRows:
-				(options?.capturePlainRows ?? options?.paint) ? mask : undefined,
+			maskRows: needSelection ? mask : undefined,
 		};
 	}
 }

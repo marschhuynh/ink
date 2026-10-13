@@ -351,7 +351,11 @@ test('line breaks are row boundaries and do not build cross-row graphemes', t =>
 	t.deepEqual(rows[1]!.parts, [
 		{kind: 'text', text: '\u0301', width: 1, ascii: false},
 	]);
-	t.throws(() => createSeekPreparer().prepareFrame('ok\n\u001B[2A', 20));
+	// 7.7.5-alpha recovers invalid frame rows; prepareSeekRow stays strict.
+	t.deepEqual(
+		createSeekPreparer().prepareFrame('ok\n\u001B[2A', 20).map(row => row.logical),
+		['ok', ''],
+	);
 });
 
 test('unchanged source rows reuse tokenization and segmentation', t => {
@@ -449,4 +453,47 @@ test('encodeSeekRow emits inherited entry SGR from frame preparation', t => {
 	const rows = createSeekPreparer().prepareFrame('\u001B[41mhello\nworld', 8);
 	const encoded = encodeSeekRow(rows[1]!, 1, 8);
 	t.true(encoded.startsWith(`${csi}2;1H${reset}${csi}2K\u001B[41mworld`));
+});
+
+// Reconstruction regressions: newly authored, not recovered upstream tests.
+test('reconstruction: invalid frame row drops inherited rendition and recovers next frame', t => {
+	const preparer = createSeekPreparer();
+	const open = '\u001B]8;;https://example.test\u0007';
+	const rows = preparer.prepareFrame(
+		`\u001B[31m${open}first\nbad\t\uD800\u001B[2A\nlast`,
+		30,
+	);
+	t.deepEqual(rows[1]!.parts, [
+		{kind: 'text', text: 'bad    ', width: 7, ascii: true},
+		{kind: 'text', text: '\uFFFD', width: 1, ascii: false},
+	]);
+	t.deepEqual(rows[2]!.parts, [
+		{kind: 'text', text: 'last', width: 4, ascii: true},
+	]);
+	const next = preparer.prepareFrame('\u001B[32mfirst\nlast', 30);
+	t.deepEqual(next[1]!.parts[0], {kind: 'control', raw: '\u001B[32m'});
+});
+
+test('reconstruction: prepared rows reuse only matching width and entry rendition', t => {
+	const preparer = createSeekPreparer();
+	const first = preparer.prepareFrame('\u001B[31mfirst\nworld', 20);
+	const same = preparer.prepareFrame('\u001B[31mfirst\nworld', 20);
+	t.is(same[1], first[1]);
+	const narrow = preparer.prepareFrame('\u001B[31mfirst\nworld', 3);
+	t.not(narrow[1], same[1]);
+	t.is(textParts(narrow[1]!.parts), 'wor');
+	const recolored = preparer.prepareFrame('\u001B[32mfirst\nworld', 3);
+	t.not(recolored[1], narrow[1]);
+	t.deepEqual(recolored[1]!.parts[0], {kind: 'control', raw: '\u001B[32m'});
+	const open = '\u001B]8;;https://example.test\u0007';
+	const linked = preparer.prepareFrame(`\u001B[32m${open}first\nworld`, 3);
+	t.not(linked[1], recolored[1]);
+	t.deepEqual(linked[1]!.parts[1], {kind: 'control', raw: open});
+	preparer.prepareFrame('other', 3);
+	const reintroduced = preparer.prepareFrame(
+		`\u001B[32m${open}first\nworld`,
+		3,
+	);
+	t.not(reintroduced[1], linked[1]);
+	t.deepEqual(reintroduced[1], linked[1]);
 });
