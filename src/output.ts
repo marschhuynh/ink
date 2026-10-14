@@ -113,6 +113,10 @@ const intersectClips = (clips: Clip[]): Clip | undefined => {
 	return result;
 };
 
+// Trims only trailing unstyled spaces. Styled spaces (e.g. a Box
+// background fill reaching the wrap column) are preserved while they fit
+// inside the terminal width; `end <= width` keeps the final styled cell of
+// a full-width row while excess styled space is still trimmed.
 const trimTrailingSpaces = (
 	line: StyledChar[],
 	width: number,
@@ -125,7 +129,7 @@ const trimTrailingSpaces = (
 			break;
 		}
 
-		if (character.styles.length > 0 && end < width) {
+		if (character.styles.length > 0 && end <= width) {
 			break;
 		}
 
@@ -570,7 +574,9 @@ export default class Output {
 				// See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
 				// Writes past `width` extend rows with sparse holes; compact them out.
 				// Holes read as `undefined` but aren't in the StyledChar type.
-				const lineWithoutEmptyItems = (line as Array<StyledChar | undefined>).includes(undefined)
+				const lineWithoutEmptyItems = (
+					line as Array<StyledChar | undefined>
+				).includes(undefined)
 					? line.filter(item => item !== undefined)
 					: line;
 				const trimmedLine = trimTrailingSpaces(

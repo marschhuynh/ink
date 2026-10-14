@@ -7,7 +7,13 @@ import {
 	renderToStringAsync,
 } from './helpers/render-to-string.js';
 import createStdout from './helpers/create-stdout.js';
+import Input from './helpers/create-readable-stdin.js';
 import {renderAsync} from './helpers/test-renderer.js';
+import {
+	Terminal,
+	viewportLine,
+	writeTerminal,
+} from './helpers/terminal-model.js';
 import {enableTestColors, disableTestColors} from './helpers/force-colors.js';
 
 // ANSI escape sequences for background colors
@@ -507,7 +513,7 @@ test('sibling backgroundColor does not leak into following parent background row
 	);
 });
 
-test('full-width backgroundColor line does not write into the terminal wrap column', t => {
+test('full-width backgroundColor line keeps its styled trailing spaces', t => {
 	const output = renderToString(
 		<Box backgroundColor="redBright" width={8} height={1}>
 			<Text>Hi</Text>
@@ -515,5 +521,184 @@ test('full-width backgroundColor line does not write into the terminal wrap colu
 		{columns: 8},
 	);
 
-	t.is(output, `${ansi.bgRedBright}Hi     ${ansi.bgReset}`);
+	// The final styled space reaches the wrap column; output.ts must not trim it.
+	t.is(output, `${ansi.bgRedBright}Hi      ${ansi.bgReset}`);
 });
+
+const cellBackground = (
+	terminal: InstanceType<typeof Terminal>,
+	row: number,
+	column: number,
+) => {
+	const line = terminal.buffer.active.getLine(
+		terminal.buffer.active.baseY + row,
+	);
+	return line?.getCell(column)?.getBgColor();
+};
+
+test.serial(
+	'bottom-row full-width styled spaces paint the wrap column without scrolling',
+	async t => {
+		const columns = 8;
+		const rows = 4;
+		const stdout = createStdout(columns);
+		stdout.rows = rows;
+		// Deterministic raw paint path: no OSC 66 probe and no allocated-seek
+		// DECAWM wrapping, so the timeline replays identically in CI.
+		const stdin = new Input();
+		stdin.isTTY = false;
+
+		const instance = render(
+			<Box height={rows} flexDirection="column" justifyContent="flex-end">
+				<Box backgroundColor="red" width={columns} height={1}>
+					<Text>Hi</Text>
+				</Box>
+			</Box>,
+			{
+				stdout,
+				stdin: stdin as unknown as NodeJS.ReadStream,
+				interactive: true,
+				explicitWidth: 'disabled',
+				exitOnCtrlC: false,
+			},
+		);
+		t.teardown(() => {
+			instance.unmount();
+			stdin.destroy();
+		});
+		await instance.waitUntilRenderFlush();
+
+		const timeline = stdout.getWrites().join('');
+		// Pinned raw strategy emits neither the DECAWM wrap nor OSC 66.
+		t.false(timeline.includes('\u001B[?7l'));
+		t.false(timeline.includes('\u001B]66'));
+
+		const terminal = new Terminal({
+			cols: columns,
+			rows,
+			allowProposedApi: true,
+		});
+		t.teardown(() => {
+			terminal.dispose();
+		});
+		await writeTerminal(terminal, timeline);
+
+		// Writing the styled space into the last column must not scroll.
+		t.is(terminal.buffer.active.baseY, 0);
+		t.is(viewportLine(terminal, rows - 1), 'Hi      ');
+		// Xterm bg color index 1 is red.
+		t.is(cellBackground(terminal, rows - 1, 0), 1);
+		t.is(cellBackground(terminal, rows - 1, columns - 1), 1);
+	},
+);
+
+test.serial(
+	'shorter repaint after a full-width styled bottom row does not scroll the viewport',
+	async t => {
+		const columns = 8;
+		const rows = 4;
+		const stdout = createStdout(columns);
+		stdout.rows = rows;
+
+		const app = (styled: boolean) => (
+			<Box height={rows} flexDirection="column" justifyContent="flex-end">
+				<Box
+					backgroundColor={styled ? 'red' : undefined}
+					width={columns}
+					height={1}
+				>
+					<Text>Hi</Text>
+				</Box>
+			</Box>
+		);
+
+		const stdin = new Input();
+		stdin.isTTY = false;
+		const instance = render(app(true), {
+			stdout,
+			stdin: stdin as unknown as NodeJS.ReadStream,
+			interactive: true,
+			explicitWidth: 'disabled',
+			exitOnCtrlC: false,
+		});
+		t.teardown(() => {
+			instance.unmount();
+			stdin.destroy();
+		});
+		await instance.waitUntilRenderFlush();
+
+		instance.rerender(app(false));
+		await instance.waitUntilRenderFlush();
+
+		const terminal = new Terminal({
+			cols: columns,
+			rows,
+			allowProposedApi: true,
+		});
+		t.teardown(() => {
+			terminal.dispose();
+		});
+		await writeTerminal(terminal, stdout.getWrites().join(''));
+
+		t.is(terminal.buffer.active.baseY, 0);
+		t.is(viewportLine(terminal, rows - 1).trimEnd(), 'Hi');
+		// Xterm returns -1 for the default (unstyled) background.
+		t.is(cellBackground(terminal, rows - 1, columns - 1), -1);
+	},
+);
+
+test.serial(
+	'over-wide background fill is trimmed to the terminal width',
+	async t => {
+		const columns = 8;
+		const rows = 4;
+		const stdout = createStdout(columns);
+		stdout.rows = rows;
+		const stdin = new Input();
+		stdin.isTTY = false;
+
+		// The Box is wider than the terminal; flexShrink={0} keeps the layout
+		// width so the fill produces styled spaces past the wrap column.
+		const instance = render(
+			<Box height={rows} flexDirection="column" justifyContent="flex-end">
+				<Box backgroundColor="red" width={10} height={1} flexShrink={0}>
+					<Text>Hi</Text>
+				</Box>
+			</Box>,
+			{
+				stdout,
+				stdin: stdin as unknown as NodeJS.ReadStream,
+				interactive: true,
+				explicitWidth: 'disabled',
+				exitOnCtrlC: false,
+			},
+		);
+		t.teardown(() => {
+			instance.unmount();
+			stdin.destroy();
+		});
+		await instance.waitUntilRenderFlush();
+
+		const timeline = stdout.getWrites().join('');
+		const terminal = new Terminal({
+			cols: columns,
+			rows,
+			allowProposedApi: true,
+		});
+		t.teardown(() => {
+			terminal.dispose();
+		});
+		await writeTerminal(terminal, timeline);
+
+		// Only the terminal-width styled cells remain; excess styled space is
+		// trimmed before serialization (and the buffer row stays 8 cells).
+		t.is(terminal.buffer.active.baseY, 0);
+		t.is(viewportLine(terminal, rows - 1), 'Hi      ');
+		t.is(cellBackground(terminal, rows - 1, columns - 1), 1);
+
+		// Serialization must not carry more than `columns` cells on that row.
+		const paint = stdout.getWrites().find(write => write.includes('Hi'));
+		const row = paint!.split('\n').find(line => line.includes('Hi'))!;
+		t.is(row, `${ansi.bgRed}Hi      ${ansi.bgReset}`);
+	},
+);
