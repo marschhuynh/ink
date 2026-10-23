@@ -7,6 +7,7 @@ import {
 	getSelectionSpans,
 	sliceSelectableCells,
 	type SelectionRow,
+	type TextContinuation,
 	type TextSelectionPoint,
 	type TextSelectionSpan,
 } from './text-selection.js';
@@ -233,6 +234,7 @@ export class TextSelectionController {
 	captureRows = (
 		plainRows: readonly string[],
 		maskRows?: ReadonlyArray<readonly boolean[]>,
+		continuations?: ReadonlyArray<TextContinuation | undefined>,
 	): void => {
 		const resolved = this.resolveViewport();
 
@@ -278,7 +280,14 @@ export class TextSelectionController {
 			const mask = maskRows
 				? sliceMask(maskRows[y], left, viewport.width)
 				: undefined;
-			const row: SelectionRow = {text, mask};
+			const sourceContinuation = continuations?.[y];
+			const continuation =
+				sourceContinuation &&
+				sourceContinuation.start >= left &&
+				sourceContinuation.start < left + viewport.width
+					? {...sourceContinuation, start: sourceContinuation.start - left}
+					: undefined;
+			const row: SelectionRow = {text, mask, continuation};
 
 			const existing = this.rowCache.get(contentY);
 
@@ -287,7 +296,8 @@ export class TextSelectionController {
 					range &&
 					contentY >= range.min &&
 					contentY <= range.max &&
-					existing.text !== text
+					(existing.text !== text ||
+						!continuationsEqual(existing.continuation, continuation))
 				) {
 					mismatch = true;
 					break;
@@ -522,11 +532,19 @@ const sliceMask = (
 		: mask.slice(left, left + width);
 };
 
+const continuationsEqual = (
+	first: TextContinuation | undefined,
+	second: TextContinuation | undefined,
+): boolean => first?.join === second?.join && first?.start === second?.start;
+
 const rowsEqual = (
 	first: SelectionRow | undefined,
 	second: SelectionRow,
 ): boolean => {
-	if (first?.text !== second.text) {
+	if (
+		first?.text !== second.text ||
+		!continuationsEqual(first?.continuation, second.continuation)
+	) {
 		return false;
 	}
 
@@ -553,6 +571,12 @@ const selectedRowTextChanged = (
 ): boolean => {
 	if (rowsEqual(rows.previous, rows.next)) {
 		return false;
+	}
+
+	if (
+		!continuationsEqual(rows.previous?.continuation, rows.next.continuation)
+	) {
+		return true;
 	}
 
 	const selectedText = (row: SelectionRow | undefined): string => {

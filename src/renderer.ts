@@ -96,8 +96,8 @@ const renderer = (
 			selection
 				? {
 						capturePlainRows: true,
-						paint(grid, plainRows, maskRows) {
-							selection.captureRows(plainRows, maskRows);
+						paint(grid, plainRows, maskRows, continuations) {
+							selection.captureRows(plainRows, maskRows, continuations);
 							paintSelection(
 								grid,
 								selection.getPaintSpans(grid[0]?.length ?? 0, grid.length),

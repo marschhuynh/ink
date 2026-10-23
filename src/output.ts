@@ -7,6 +7,7 @@ import {
 	styledCharsFromTokens,
 	tokenize,
 } from '@alcalzone/ansi-tokenize';
+import {type TextContinuation} from './text-selection.js';
 import {type OutputTransformer} from './render-node-to-output.js';
 
 /**
@@ -32,6 +33,7 @@ type WriteOperation = {
 	text: string;
 	transformers: OutputTransformer[];
 	selectable: boolean;
+	continuations?: ReadonlyArray<TextContinuation | undefined>;
 };
 
 type ClipOperation = {
@@ -56,6 +58,7 @@ type GetOptions = {
 		grid: StyledChar[][],
 		plainRows: string[],
 		maskRows: boolean[][],
+		continuations: Array<TextContinuation | undefined>,
 	) => void;
 };
 
@@ -288,9 +291,13 @@ export default class Output {
 		x: number,
 		y: number,
 		text: string,
-		options: {transformers: OutputTransformer[]; selectable?: boolean},
+		options: {
+			transformers: OutputTransformer[];
+			selectable?: boolean;
+			continuations?: ReadonlyArray<TextContinuation | undefined>;
+		},
 	): void {
-		const {transformers, selectable = false} = options;
+		const {transformers, selectable = false, continuations} = options;
 
 		if (!text) {
 			return;
@@ -303,6 +310,7 @@ export default class Output {
 			text,
 			transformers,
 			selectable,
+			continuations,
 		});
 	}
 
@@ -331,6 +339,7 @@ export default class Output {
 		maxVisualWidth: number;
 		plainRows?: string[];
 		maskRows?: boolean[][];
+		continuations?: Array<TextContinuation | undefined>;
 	} {
 		const needSelection = Boolean(options?.capturePlainRows ?? options?.paint);
 		// Initialize output array with a specific set of rows, so that margin/padding at the bottom is preserved
@@ -338,6 +347,8 @@ export default class Output {
 		// Selectability mask: true only for cells written with `selectable: true`
 		// (i.e. Text content). Padding, margin, borders, and untouched cells stay false.
 		const mask: boolean[][] = [];
+		const continuations: Array<TextContinuation | undefined> = [];
+		const selectableWrites: number[] = [];
 
 		const spaceCell: StyledChar = {
 			type: 'char',
@@ -368,6 +379,7 @@ export default class Output {
 				const {text, transformers, selectable, x} = operation;
 				let {y} = operation;
 				let lines = text.split('\n');
+				let sourceRow = 0;
 
 				const clip = intersectClips(clips);
 
@@ -404,6 +416,7 @@ export default class Output {
 						const to = y + height > clip.y2! ? clip.y2! - y : height;
 
 						lines = lines.slice(from, to);
+						sourceRow = from;
 
 						if (y < clip.y1!) {
 							y = clip.y1!;
@@ -482,6 +495,19 @@ export default class Output {
 						continue;
 					}
 
+					if (needSelection && selectable) {
+						selectableWrites[y + offsetY] =
+							(selectableWrites[y + offsetY] ?? 0) + 1;
+						const continuation = operation.continuations?.[sourceRow + index];
+						const start = x + (continuation?.start ?? 0);
+						continuations[y + offsetY] =
+							continuation &&
+							start >= (clip?.x1 ?? 0) &&
+							start < (clip?.x2 ?? this.width)
+								? {...continuation, start}
+								: undefined;
+					}
+
 					const spaceCell: StyledChar = {
 						type: 'char',
 						value: ' ',
@@ -552,6 +578,19 @@ export default class Output {
 		let plainRows: string[] | undefined;
 
 		if (needSelection) {
+			for (const [y, continuation] of continuations.entries()) {
+				// Whole-row provenance is only valid for one text flow. Side-by-side
+				// Text writes or an overpainted boundary must not drop visible text.
+				if (
+					continuation &&
+					((selectableWrites[y] ?? 0) > 1 ||
+						(selectableWrites[y - 1] ?? 0) > 1 ||
+						mask[y]?.[continuation.start] !== true)
+				) {
+					continuations[y] = undefined;
+				}
+			}
+
 			plainRows = output.map(row => {
 				let plain = '';
 				for (const character of row) {
@@ -566,7 +605,7 @@ export default class Output {
 		// Generic final mutation point: sees the fully built grid (after
 		// wrapping, transforms, borders, backgrounds, and scroll clipping)
 		// before it is converted to ANSI.
-		options?.paint?.(output, plainRows!, mask ?? []);
+		options?.paint?.(output, plainRows!, mask ?? [], continuations);
 
 		let maxVisualWidth = 0;
 		const generatedOutput = output
@@ -595,6 +634,7 @@ export default class Output {
 			maxVisualWidth,
 			plainRows,
 			maskRows: needSelection ? mask : undefined,
+			continuations: needSelection ? continuations : undefined,
 		};
 	}
 }

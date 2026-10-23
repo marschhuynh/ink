@@ -1,6 +1,7 @@
 import indentString from 'indent-string';
 import Yoga from 'yoga-layout';
-import wrapText from './wrap-text.js';
+import {wrapTextWithContinuations} from './wrap-text.js';
+import {type TextContinuation} from './text-selection.js';
 import getMaxWidth from './get-max-width.js';
 import squashTextNodes from './squash-text-nodes.js';
 import renderBorder from './render-border.js';
@@ -216,6 +217,7 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 
 		if (child.nodeName === 'ink-text') {
 			let text = squashTextNodes(child);
+			let continuations: Array<TextContinuation | undefined> = [];
 
 			if (text.length > 0) {
 				markPainted(child, paintState);
@@ -224,9 +226,25 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 
 				if (currentWidth > maxWidth) {
 					const textWrap = child.style.textWrap ?? 'wrap';
-					text = wrapText(text, maxWidth, textWrap);
+					const wrapped = wrapTextWithContinuations(text, maxWidth, textWrap);
+					text = wrapped.text;
+					continuations = [...wrapped.continuations];
 				}
 
+				continuations[0] = child.internal_continuation;
+				const paddingNode = child.childNodes[0]?.yogaNode;
+				const paddingX = paddingNode?.getComputedLeft() ?? 0;
+				const paddingY = paddingNode?.getComputedTop() ?? 0;
+				continuations = [
+					...Array.from<undefined>({length: paddingY}),
+					...continuations.map(
+						continuation =>
+							continuation && {
+								...continuation,
+								start: continuation.start + paddingX,
+							},
+					),
+				];
 				text = applyPaddingToText(child, text);
 				const childTransformers =
 					typeof child.internal_transform === 'function'
@@ -235,6 +253,7 @@ const renderStickyNode = (node: DOMElement, context: RenderContext): void => {
 				output.write(childX, childY, text, {
 					transformers: childTransformers,
 					selectable: child.internal_selectable !== false,
+					continuations,
 				});
 			}
 		} else if (child.nodeName === 'ink-box') {
@@ -457,6 +476,7 @@ const renderNodeToOutput = (
 
 		if (node.nodeName === 'ink-text') {
 			let text = squashTextNodes(node);
+			let continuations: Array<TextContinuation | undefined> = [];
 
 			if (text.length > 0) {
 				const currentWidth = output.measureWidestLine(text);
@@ -464,14 +484,31 @@ const renderNodeToOutput = (
 
 				if (currentWidth > maxWidth) {
 					const textWrap = node.style.textWrap ?? 'wrap';
-					text = wrapText(text, maxWidth, textWrap);
+					const wrapped = wrapTextWithContinuations(text, maxWidth, textWrap);
+					text = wrapped.text;
+					continuations = [...wrapped.continuations];
 				}
 
+				continuations[0] = node.internal_continuation;
+				const paddingNode = node.childNodes[0]?.yogaNode;
+				const paddingX = paddingNode?.getComputedLeft() ?? 0;
+				const paddingY = paddingNode?.getComputedTop() ?? 0;
+				continuations = [
+					...Array.from<undefined>({length: paddingY}),
+					...continuations.map(
+						continuation =>
+							continuation && {
+								...continuation,
+								start: continuation.start + paddingX,
+							},
+					),
+				];
 				text = applyPaddingToText(node, text);
 
 				output.write(x, y, text, {
 					transformers: newTransformers,
 					selectable: node.internal_selectable !== false,
+					continuations,
 				});
 			}
 

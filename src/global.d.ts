@@ -1,5 +1,6 @@
 import {type ReactNode, type Key, type Ref} from 'react';
 import {type Except} from 'type-fest';
+import {type TextContinuation} from './text-selection.js';
 import {type DOMElement} from './dom.js';
 import {type Styles} from './styles.js';
 
@@ -36,6 +37,7 @@ declare namespace Ink {
 		internal_transformAffectsGeometry?: boolean;
 
 		internal_selectable?: boolean;
+		internal_continuation?: TextContinuation;
 		internal_accessibility?: DOMElement['internal_accessibility'];
 	};
 }

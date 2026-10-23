@@ -158,3 +158,28 @@ test('reconstruction: selection span lookup stays within exclusive row bounds', 
 		{y: 51, x1: 0, x2: 4},
 	]);
 });
+
+test('soft continuations preserve word spacing, split words, and hard lines', t => {
+	const rows = [
+		{text: 'hello'},
+		{text: 'world', continuation: {join: ' ', start: 0}},
+		{text: 'abcde'},
+		{text: 'fgh', continuation: {join: '', start: 0}},
+		{text: ''},
+		{text: '  code'},
+		{text: '  continued', continuation: {join: ' ', start: 2}},
+		{text: '    next'},
+	];
+	const getRow = (y: number) => rows[y];
+	t.is(
+		extractTextFromRows({x: 0, y: 0}, {x: 8, y: 7}, getRow),
+		'hello world\nabcdefgh\n\n  code continued\n    next',
+	);
+	t.is(extractTextFromRows({x: 3, y: 1}, {x: 2, y: 0}, getRow), 'llo wor');
+	t.is(extractTextFromRows({x: 2, y: 3}, {x: 2, y: 2}, getRow), 'cdefg');
+	t.is(extractTextFromRows({x: 0, y: 6}, {x: 6, y: 6}, getRow), '  cont');
+	t.deepEqual(getSelectionSpans({x: 0, y: 5}, {x: 6, y: 6}, getRow), [
+		{y: 5, x1: 0, x2: 6},
+		{y: 6, x1: 0, x2: 6},
+	]);
+});

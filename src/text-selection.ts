@@ -8,12 +8,23 @@ export type TextSelectionPoint = {x: number; y: number};
 
 export type TextSelectionSpan = {y: number; x1: number; x2: number};
 
+export type TextContinuation = {
+	/** Whitespace removed at the wrap boundary; empty for a split word. */
+	join: string;
+	/** First content cell after any generated continuation indentation. */
+	start: number;
+};
+
 /**
 A single cached row of rendered content. `mask` flags which display cells are
 selectable (written by `<Text>` and not opted out); a missing mask means every
 cell is selectable.
 */
-export type SelectionRow = {text: string; mask?: readonly boolean[]};
+export type SelectionRow = {
+	text: string;
+	mask?: readonly boolean[];
+	continuation?: TextContinuation;
+};
 
 export type RowLookup = (y: number) => SelectionRow | undefined;
 
@@ -158,8 +169,18 @@ export function extractTextFromRows(
 	getRow: RowLookup,
 ): string {
 	return getSelectionSpans(anchor, focus, getRow)
-		.map(span =>
-			sliceSelectableCells(getRow(span.y) ?? {text: ''}, span.x1, span.x2),
-		)
-		.join('\n');
+		.map((span, index) => {
+			const row = getRow(span.y) ?? {text: ''};
+			const continuation = index > 0 ? row.continuation : undefined;
+			const separator = index === 0 ? '' : (continuation?.join ?? '\n');
+			return (
+				separator +
+				sliceSelectableCells(
+					row,
+					Math.max(span.x1, continuation?.start ?? 0),
+					span.x2,
+				)
+			);
+		})
+		.join('');
 }

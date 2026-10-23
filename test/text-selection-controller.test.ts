@@ -268,3 +268,43 @@ test('reconstruction: a finished selection fills previously uncaptured middle ro
 	t.is(controller.getSnapshot().text, 'first\nmiddle\nlast');
 	t.deepEqual(controller.getPaintSpans(10, 1), [{y: 0, x1: 0, x2: 6}]);
 });
+
+test('continuation-only changes refresh a drag and invalidate a frozen selection', t => {
+	const controller = new TextSelectionController();
+	controller.captureRows(['hello', 'world']);
+	controller.start({x: 0, y: 0});
+	controller.update({x: 5, y: 1});
+	t.is(controller.getSnapshot().text, 'hello\nworld');
+	controller.captureRows(['hello', 'world'], undefined, [
+		undefined,
+		{join: ' ', start: 0},
+	]);
+	t.is(controller.getSnapshot().text, 'hello world');
+	controller.finish();
+	controller.captureRows(['hello', 'world']);
+	t.true(controller.getSnapshot().isEmpty);
+});
+
+test('scroll cache retains continuations in content coordinates', t => {
+	const controller = new TextSelectionController();
+	let scrollY = 0;
+	controller.setViewportProvider(() => ({
+		top: 0,
+		left: 2,
+		width: 8,
+		height: 2,
+		scrollY,
+	}));
+	controller.captureRows(['  hello', '  world'], undefined, [
+		undefined,
+		{join: ' ', start: 2},
+	]);
+	controller.start({x: 2, y: 0});
+	scrollY = 1;
+	controller.captureRows(['  world', '  again'], undefined, [
+		{join: ' ', start: 2},
+		{join: ' ', start: 2},
+	]);
+	controller.update({x: 7, y: 1});
+	t.is(controller.getSnapshot().text, 'hello world again');
+});

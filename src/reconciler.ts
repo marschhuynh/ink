@@ -311,6 +311,12 @@ export default createReconciler<
 				continue;
 			}
 
+			if (key === 'internal_continuation') {
+				node.internal_continuation =
+					value as DOMElement['internal_continuation'];
+				continue;
+			}
+
 			if (key === 'internal_selectable') {
 				node.internal_selectable = value as boolean;
 				continue;
@@ -441,6 +447,12 @@ export default createReconciler<
 
 				if (key === 'internal_transformAffectsGeometry') {
 					node.internal_transformAffectsGeometry = value === true;
+					continue;
+				}
+
+				if (key === 'internal_continuation') {
+					node.internal_continuation =
+						value as DOMElement['internal_continuation'];
 					continue;
 				}
 

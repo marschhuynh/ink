@@ -431,3 +431,33 @@ test('complete-line cache does not promote clipped prefixes or ignore later clip
 		[false, false, true],
 	]);
 });
+
+test('continuations follow vertically clipped source rows and do not merge adjacent text columns', t => {
+	const clipped = new Output({width: 12, height: 2});
+	clipped.clip({x1: 0, x2: 12, y1: 0, y2: 2});
+	clipped.write(2, -1, 'hello\nworld\nnext', {
+		transformers: [],
+		selectable: true,
+		continuations: [undefined, {join: ' ', start: 0}, undefined],
+	});
+	t.deepEqual(clipped.get({capturePlainRows: true}).continuations, [
+		{join: ' ', start: 2},
+		undefined,
+	]);
+
+	const columns = new Output({width: 12, height: 2});
+	for (const x of [0, 6]) {
+		columns.write(x, 0, 'hello\nworld', {
+			transformers: [],
+			selectable: true,
+			continuations: [undefined, {join: ' ', start: 0}],
+		});
+	}
+
+	// A whole-row continuation cannot describe two independent columns. Keep
+	// their visual break rather than silently dropping the left-hand column.
+	t.deepEqual(columns.get({capturePlainRows: true}).continuations, [
+		undefined,
+		undefined,
+	]);
+});

@@ -45,6 +45,7 @@ export type {
 	TextSelectionPoint,
 	TextSelectionSpan,
 	SelectionRow,
+	TextContinuation,
 } from './text-selection.js';
 export type {
 	SelectionViewport,

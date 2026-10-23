@@ -1,6 +1,7 @@
 import React, {useContext, type ReactNode} from 'react';
 import chalk, {type ForegroundColorName} from 'chalk';
 import {type LiteralUnion} from 'type-fest';
+import {type TextContinuation} from '../text-selection.js';
 import colorize from '../colorize.js';
 import {type Styles} from '../styles.js';
 import {accessibilityContext} from './AccessibilityContext.js';
@@ -71,6 +72,13 @@ export type Props = {
 	*/
 	readonly selectable?: boolean;
 
+	/**
+	For prewrapped text: how this Text's first row continues the preceding row.
+	Only supported on a top-level Text, not nested inline Text.
+	Does not affect layout or highlighting.
+	*/
+	readonly continuation?: TextContinuation;
+
 	readonly children?: ReactNode;
 };
 
@@ -88,6 +96,7 @@ export default function Text({
 	inverse = false,
 	wrap = 'wrap',
 	selectable = true,
+	continuation,
 	children,
 	'aria-label': ariaLabel,
 	'aria-hidden': ariaHidden = false,
@@ -149,6 +158,7 @@ export default function Text({
 			style={{flexGrow: 0, flexShrink: 1, flexDirection: 'row', textWrap: wrap}}
 			internal_transform={transform}
 			internal_selectable={selectable}
+			internal_continuation={continuation}
 		>
 			{childrenOrAriaLabel}
 		</ink-text>

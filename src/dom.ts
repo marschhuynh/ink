@@ -1,4 +1,5 @@
 import Yoga, {type Node as YogaNode} from 'yoga-layout';
+import {type TextContinuation} from './text-selection.js';
 import measureText from './measure-text.js';
 import {type Styles} from './styles.js';
 import wrapText from './wrap-text.js';
@@ -52,6 +53,7 @@ export type DOMElement = {
 	// Whether this Text node's cells participate in text selection.
 	// Undefined means selectable; false marks chrome (icons, gutters, markers).
 	internal_selectable?: boolean;
+	internal_continuation?: TextContinuation;
 
 	internal_accessibility?: {
 		role?:
