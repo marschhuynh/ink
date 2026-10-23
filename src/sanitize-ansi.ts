@@ -4,7 +4,8 @@ const sgrParametersRegex = /^[\d:;]*$/;
 
 // These are text controls, not ANSI sequence delimiters or layout whitespace.
 /* eslint-disable no-control-regex */
-const unsupportedTextControls = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+const unsupportedTextControls =
+	/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 /* eslint-enable no-control-regex */
 
 const normalizeText = (text: string): string =>

@@ -58,6 +58,7 @@ for (const incrementalRendering of [false, true]) {
 			instance.rerender(<Text>⚠️</Text>);
 			await instance.waitUntilRenderFlush();
 			t.true(stdout.getWrites().slice(before).join('').includes(osc('⚠️')));
+			// eslint-disable-next-line no-control-regex -- Match literal terminal protocol control bytes.
 			t.false(/\u001B\[\??6n|\u001B\[\?u/.test(stdout.getWrites().join('')));
 		},
 	);
@@ -76,7 +77,7 @@ for (const value of [undefined, '0', 'true']) {
 	});
 }
 
-for (const [name, options, isTTY] of [
+for (const [name, options, isTty] of [
 	['redirected', {}, false],
 	['noninteractive', {interactive: false}, true],
 	['debug', {debug: true}, true],
@@ -84,7 +85,7 @@ for (const [name, options, isTTY] of [
 ] as const) {
 	test.serial(`manual widths bypass ${name} output`, async t => {
 		setFlag(t);
-		const stdout = createStdout(40, isTTY);
+		const stdout = createStdout(40, isTty);
 		const instance = mount(t, <Text>⚡︎</Text>, {stdout, ...options});
 		await instance.waitUntilRenderFlush();
 		instance.unmount();
@@ -155,6 +156,7 @@ test.serial(
 			writeExternal = useStdout().write;
 			return <Text>⚡︎</Text>;
 		}
+
 		const instance = mount(t, <App />, {stdout});
 		await instance.waitUntilRenderFlush();
 		const before = stdout.getWrites().length;

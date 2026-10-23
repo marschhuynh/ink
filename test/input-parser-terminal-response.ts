@@ -48,7 +48,7 @@ test('known private reply partials cannot escape through the ordinary ESC flush'
 test('startup holds ambiguous ESC prefixes only while negotiation is pending', t => {
 	let pending = true;
 	const parser = createInputParser({
-		onTerminalResponse: (_response: unknown) => {},
+		onTerminalResponse(_response: unknown) {},
 		isTerminalResponsePending: () => pending,
 	});
 	t.deepEqual(parser.push('\u001B'), []);
@@ -133,7 +133,7 @@ test('oversized private replies are discarded rather than accepted as capabiliti
 
 test('a truncated oversized reply cannot swallow an interrupt or following key', t => {
 	const parser = createInputParser({
-		onTerminalResponse: (_response: unknown) => {},
+		onTerminalResponse(_response: unknown) {},
 	});
 	parser.push('\u001B[?' + '0'.repeat(10_000));
 	t.deepEqual(parser.push('\u0003'), ['\u0003']);

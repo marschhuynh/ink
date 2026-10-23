@@ -215,7 +215,11 @@ test('unsupported control in the last row recovers only that row', async t => {
 	t.true(delta.includes(encodeSeekRow(prepareSeekRow('okunsafe', 8), 2, 8)));
 	t.false(delta.includes('TOP'));
 	t.false(delta.includes('MIDDLE'));
-	t.deepEqual(log.getPhysicalFrame()?.logicalRows, ['TOP', 'MIDDLE', 'okunsafe']);
+	t.deepEqual(log.getPhysicalFrame()?.logicalRows, [
+		'TOP',
+		'MIDDLE',
+		'okunsafe',
+	]);
 	const terminal = await replayWrites(t, stdout);
 	t.is(viewportLine(terminal, 0).trimEnd(), 'TOP');
 	t.is(viewportLine(terminal, 1).trimEnd(), 'MIDDLE');

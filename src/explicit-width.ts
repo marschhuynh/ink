@@ -2,7 +2,9 @@ import {Buffer} from 'node:buffer';
 import stringWidth from 'string-width';
 import {readTerminalControl} from './terminal-control.js';
 
+// eslint-disable-next-line no-control-regex -- Match literal terminal protocol control bytes.
 const ascii = /^[\u0000-\u007F]*$/;
+// eslint-disable-next-line no-control-regex -- Match literal terminal protocol control bytes.
 const terminalControl = /[\u0000-\u001F\u007F-\u009F]/;
 const formatOnly = /^\p{Format}+$/u;
 const noncharacter =
@@ -93,6 +95,7 @@ export function createExplicitWidthEncoder(): (text: string) => string {
 		};
 
 		while (index < row.length) {
+			// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 			const code = row.charCodeAt(index);
 
 			if (code <= 0x1f || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
@@ -133,7 +136,7 @@ export function createExplicitWidthEncoder(): (text: string) => string {
 	return (text: string): string => {
 		if (!text.includes('\n')) {
 			const encoded = encodeRow(text);
-			return encoded === undefined ? text : encoded;
+			return encoded ?? text;
 		}
 
 		const rows = text.split('\n');

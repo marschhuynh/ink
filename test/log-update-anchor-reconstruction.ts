@@ -26,7 +26,9 @@ test('reconstruction: non-fullscreen scroll waits for an absolute row anchor', a
 	t.true(stdout.get().includes(`${csi}6;9r`));
 
 	const terminal = new Terminal({cols: 20, rows: 12, allowProposedApi: true});
-	t.teardown(() => terminal.dispose());
+	t.teardown(() => {
+		terminal.dispose();
+	});
 	await writeTerminal(
 		terminal,
 		`${csi}1;1HPROMPT${csi}6;1H${frames[1]!.replaceAll('\n', '\r\n')}`,
@@ -63,6 +65,7 @@ test('reconstruction: unanswered anchor queries have a lifetime retry budget', t
 	for (let frame = 0; frame < 9; frame++) {
 		log(Array.from({length: 4}, (_, row) => `row-${frame + row}`).join('\n'));
 	}
+
 	t.is(
 		stdout.getWrites().filter(write => write.includes(`${csi}?6n`)).length,
 		3,

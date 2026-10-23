@@ -32,6 +32,8 @@ const context = {
 
 const frame = 'VIEW\nr1\nr2\nr3';
 
+type WriteCallback = NonNullable<Parameters<Writable['write']>[2]>;
+
 type TestStdout = Writable & {
 	columns: number;
 	rows: number;
@@ -98,10 +100,7 @@ const createWritableStdout = (
 	options: {
 		columns?: number;
 		rows?: number;
-		writeImpl?: (
-			text: string,
-			callback: (error?: Error | null) => void,
-		) => boolean | void;
+		writeImpl?: (text: string, callback: WriteCallback) => boolean | void;
 	} = {},
 ): TestStdout => {
 	const chunks: string[] = [];
@@ -222,8 +221,8 @@ test('throw during seek write restores DECAWM and does not keep a physical frame
 	const original = stdout.write.bind(stdout);
 	stdout.write = (
 		chunk: string | Uint8Array,
-		encoding?: BufferEncoding | ((error?: Error | null) => void),
-		callback?: (error?: Error | null) => void,
+		encoding?: BufferEncoding | WriteCallback,
+		callback?: WriteCallback,
 	) => {
 		if (String(chunk).includes(decawmOff)) {
 			throw new Error('boom');
@@ -248,8 +247,8 @@ test('write backpressure followed by success still publishes the physical frame'
 	const original = stdout.write.bind(stdout);
 	stdout.write = (
 		chunk: string | Uint8Array,
-		encoding?: BufferEncoding | ((error?: Error | null) => void),
-		callback?: (error?: Error | null) => void,
+		encoding?: BufferEncoding | WriteCallback,
+		callback?: WriteCallback,
 	) => {
 		original(chunk, encoding as BufferEncoding, callback);
 		return false;
@@ -330,8 +329,8 @@ test.serial(
 		const original = stdout.write.bind(stdout);
 		stdout.write = (
 			chunk: string | Uint8Array,
-			encoding?: BufferEncoding | ((error?: Error | null) => void),
-			callback?: (error?: Error | null) => void,
+			encoding?: BufferEncoding | WriteCallback,
+			callback?: WriteCallback,
 		) => {
 			if (String(chunk).includes(decawmOff)) {
 				throw new Error('boom');
@@ -346,38 +345,35 @@ test.serial(
 	},
 );
 
-test.serial(
-	'seek paint that throws after BSU still emits ESU',
-	async t => {
-		const stdout = createWritableStdout();
-		const original = stdout.write.bind(stdout);
-		let sawBsu = false;
-		stdout.write = (
-			chunk: string | Uint8Array,
-			encoding?: BufferEncoding | ((error?: Error | null) => void),
-			callback?: (error?: Error | null) => void,
-		) => {
-			const text = String(chunk);
-			if (sawBsu && text !== esu) {
-				throw new Error('after bsu');
-			}
+test.serial('seek paint that throws after BSU still emits ESU', async t => {
+	const stdout = createWritableStdout();
+	const original = stdout.write.bind(stdout);
+	let sawBsu = false;
+	stdout.write = (
+		chunk: string | Uint8Array,
+		encoding?: BufferEncoding | WriteCallback,
+		callback?: WriteCallback,
+	) => {
+		const text = String(chunk);
+		if (sawBsu && text !== esu) {
+			throw new Error('after bsu');
+		}
 
-			if (text.includes(bsu)) {
-				sawBsu = true;
-			}
+		if (text.includes(bsu)) {
+			sawBsu = true;
+		}
 
-			return original(chunk, encoding as BufferEncoding, callback);
-		};
+		return original(chunk, encoding as BufferEncoding, callback);
+	};
 
-		const {exit} = setup(t, {stdout});
-		await t.throwsAsync(exit, {message: 'after bsu'});
-		const joined = stdout.joined();
-		t.true(sawBsu);
-		t.true(joined.includes(bsu), joined);
-		t.true(joined.includes(esu), joined);
-		t.true(joined.lastIndexOf(esu) > joined.lastIndexOf(bsu), joined);
-	},
-);
+	const {exit} = setup(t, {stdout});
+	await t.throwsAsync(exit, {message: 'after bsu'});
+	const joined = stdout.joined();
+	t.true(sawBsu);
+	t.true(joined.includes(bsu), joined);
+	t.true(joined.includes(esu), joined);
+	t.true(joined.lastIndexOf(esu) > joined.lastIndexOf(bsu), joined);
+});
 
 test.serial(
 	'async write error surfaces through the exit promise without hanging flush',
@@ -391,8 +387,8 @@ test.serial(
 		const original = stdout.write.bind(stdout);
 		stdout.write = (
 			chunk: string | Uint8Array,
-			encoding?: BufferEncoding | ((error?: Error | null) => void),
-			callback?: (error?: Error | null) => void,
+			encoding?: BufferEncoding | WriteCallback,
+			callback?: WriteCallback,
 		) => {
 			const result = original(chunk, encoding as BufferEncoding, callback);
 			if (String(chunk).includes(decawmOff)) {
@@ -427,8 +423,8 @@ test.serial(
 		let reentered = false;
 		stdout.write = (
 			chunk: string | Uint8Array,
-			encoding?: BufferEncoding | ((error?: Error | null) => void),
-			callback?: (error?: Error | null) => void,
+			encoding?: BufferEncoding | WriteCallback,
+			callback?: WriteCallback,
 		) => {
 			if (!reentered && String(chunk).includes(decawmOff)) {
 				reentered = true;

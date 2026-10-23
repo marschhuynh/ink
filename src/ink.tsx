@@ -333,7 +333,7 @@ export default class Ink {
 	private pendingStaticOutput = '';
 	private pendingHistoryAdvance = false;
 	private transformOutput?: (output: string) => string;
-	private paintEligible = false;
+	private readonly paintEligible: boolean = false;
 	private paintCapability: 'raw' | 'osc66' | 'fallback' = 'raw';
 	private readonly widthDetection?: ExplicitWidthDetection;
 	private pendingFrame?: PendingFrame;
@@ -391,12 +391,10 @@ export default class Ink {
 			this.widthDetection = new ExplicitWidthDetection({
 				getSize: () => getWindowSize(this.options.stdout),
 				write: text => {
-					if (
-						!getWritableStreamState(this.options.stdout as MaybeWritableStream)
-							.canWriteToStdout
-					) {
+					if (!getWritableStreamState(this.options.stdout).canWriteToStdout) {
 						throw new Error('Terminal output is unavailable');
 					}
+
 					this.options.stdout.write(text);
 				},
 				reserve: this.reserveExplicitWidthFrame,
@@ -569,9 +567,7 @@ export default class Ink {
 		const err = isErrorInput(error)
 			? error
 			: new Error('Terminal output failed');
-		if (!this.outputError) {
-			this.outputError = err;
-		}
+		this.outputError ??= err;
 
 		if (this.isUnmounted || this.isUnmounting) {
 			return;
@@ -605,7 +601,7 @@ export default class Ink {
 			layoutColumns: this.lastLayoutWidth ?? size.columns,
 			layoutRows: this.lastLayoutRows ?? size.rows,
 		});
-		if (layoutStale && (context || this.pendingHistoryAdvance)) {
+		if (layoutStale && (context ?? this.pendingHistoryAdvance)) {
 			this.consumeHistoryAdvance(size.rows);
 			this.scheduleLayoutRender();
 			return;
@@ -775,11 +771,13 @@ export default class Ink {
 			) {
 				// No physical frame exists yet; keep the first nonempty frame eligible.
 				return;
-			} else {
-				this.widthDetection.start();
 			}
+
+			this.widthDetection.start();
+
 			return;
 		}
+
 		try {
 			this.commitInteractiveFrame(frame);
 		} catch (error) {
@@ -809,24 +807,24 @@ export default class Ink {
 					writeToStderr={this.writeToStderr}
 					setCursorPosition={this.setCursorPosition}
 					textSelection={this.textSelection}
-					onExit={this.handleAppExit}
-					onWaitUntilRenderFlush={this.waitUntilRenderFlush}
-					onTerminalResponse={
-						this.widthDetection ||
-						this.kittyAutoFlags ||
-						this.options.incrementalRendering
-							? this.handleTerminalResponse
-							: undefined
-					}
 					isTerminalResponsePending={
-						this.widthDetection ||
-						this.kittyAutoFlags ||
-						this.options.incrementalRendering
+						(this.widthDetection ??
+						this.kittyAutoFlags ??
+						this.options.incrementalRendering)
 							? this.isTerminalResponsePending
 							: undefined
 					}
+					onExit={this.handleAppExit}
+					onWaitUntilRenderFlush={this.waitUntilRenderFlush}
+					onTerminalResponse={
+						(this.widthDetection ??
+						this.kittyAutoFlags ??
+						this.options.incrementalRendering)
+							? this.handleTerminalResponse
+							: undefined
+					}
 					onInputReady={
-						this.widthDetection || this.kittyAutoFlags
+						(this.widthDetection ?? this.kittyAutoFlags)
 							? this.handleInputReady
 							: undefined
 					}
@@ -850,7 +848,12 @@ export default class Ink {
 		if (this.isUnmounted) {
 			return;
 		}
-		if (this.deferUntilExplicitWidthSettlement(() => this.writeToStdout(data)))
+
+		if (
+			this.deferUntilExplicitWidthSettlement(() => {
+				this.writeToStdout(data);
+			})
+		)
 			return;
 
 		if (this.options.debug) {
@@ -870,7 +873,12 @@ export default class Ink {
 		if (this.isUnmounted) {
 			return;
 		}
-		if (this.deferUntilExplicitWidthSettlement(() => this.writeToStderr(data)))
+
+		if (
+			this.deferUntilExplicitWidthSettlement(() => {
+				this.writeToStderr(data);
+			})
+		)
 			return;
 
 		if (this.options.debug) {
@@ -893,7 +901,11 @@ export default class Ink {
 			return;
 		}
 
-		if (this.deferUntilExplicitWidthSettlement(() => this.unmount(error)))
+		if (
+			this.deferUntilExplicitWidthSettlement(() => {
+				this.unmount(error);
+			})
+		)
 			return;
 		this.isUnmounting = true;
 
@@ -1000,6 +1012,7 @@ export default class Ink {
 					this.log.done();
 				} catch {}
 			}
+
 			this.kittyProtocolEnabled = false;
 
 			instances.delete(this.options.stdout);
@@ -1104,8 +1117,7 @@ export default class Ink {
 		reconciler.flushSyncWork();
 		settleThrottle(
 			this.throttledOnRender,
-			getWritableStreamState(this.options.stdout as MaybeWritableStream)
-				.canWriteToStdout,
+			getWritableStreamState(this.options.stdout).canWriteToStdout,
 		);
 		if (this.widthDetection?.pending) await this.widthDetection.finished;
 		if (this.isUnmounted || this.isUnmounting) {
@@ -1123,6 +1135,7 @@ export default class Ink {
 		if (canWriteToStdout && hasWritableState) {
 			await new Promise<void>(resolve => {
 				let settled = false;
+				// eslint-disable-next-line @typescript-eslint/no-restricted-types -- Node write callbacks can report success with null.
 				const finish = (writeError?: Error | null) => {
 					if (settled) {
 						return;
@@ -1136,9 +1149,11 @@ export default class Ink {
 
 					resolve();
 				};
+
 				const onError = (writeError: Error) => {
 					finish(writeError);
 				};
+
 				this.options.stdout.once('error', onError);
 				try {
 					this.options.stdout.write('', writeError => {
@@ -1820,11 +1835,11 @@ export default class Ink {
 				this.paintCapability = 'fallback';
 			}
 		}
+
 		try {
 			if (
 				this.isUnmounted ||
-				!getWritableStreamState(this.options.stdout as MaybeWritableStream)
-					.canWriteToStdout
+				!getWritableStreamState(this.options.stdout).canWriteToStdout
 			)
 				return;
 			if (reserved) this.commitInteractiveFrame(reserved);
@@ -1851,9 +1866,7 @@ export default class Ink {
 	private finishExplicitWidthSettlement(): void {
 		this.resumePendingInput?.();
 		for (const node of this.deferredWidthRenders.splice(0)) this.render(node);
-		const canWriteToStdout = getWritableStreamState(
-			this.options.stdout as MaybeWritableStream,
-		).canWriteToStdout;
+		const {canWriteToStdout} = getWritableStreamState(this.options.stdout);
 		settleThrottle(this.throttledOnRender, canWriteToStdout);
 		settleThrottle(this.throttledLog, canWriteToStdout);
 		for (const action of this.deferredWidthLifecycleActions.splice(0)) {
@@ -1864,8 +1877,8 @@ export default class Ink {
 
 	private isTerminalResponsePending(): boolean {
 		return Boolean(
-			this.widthDetection?.pending ||
-			this.cancelKittyDetection ||
+			Boolean(this.widthDetection?.pending) ||
+			Boolean(this.cancelKittyDetection) ||
 			this.log.hasPendingAnchorQuery?.(),
 		);
 	}
@@ -1882,10 +1895,12 @@ export default class Ink {
 				this.resumePendingInput = undefined;
 				afterSettlement?.();
 			};
+
 			if (this.deferUntilExplicitWidthSettlement(finishInputRelease)) return;
 			finishInputRelease();
 			return;
 		}
+
 		if (this.isUnmounted || this.isUnmounting) return;
 		this.resumePendingInput = resumePendingInput;
 		this.widthDetection?.setInputReady(true);
@@ -1920,6 +1935,7 @@ export default class Ink {
 
 			return;
 		}
+
 		if (
 			this.kittyQuerySent &&
 			this.kittyAutoFlags &&
@@ -1975,6 +1991,7 @@ export default class Ink {
 			this.kittyAutoFlags = undefined;
 			this.resumePendingInput?.();
 		};
+
 		const timer = setTimeout(cleanup, 200);
 		this.cancelKittyDetection = cleanup;
 		if (this.rawInputReady)

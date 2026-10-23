@@ -1,5 +1,5 @@
+import {Buffer} from 'node:buffer';
 import process from 'node:process';
-import Input from './helpers/create-readable-stdin.js';
 import {setImmediate as yieldImmediate} from 'node:timers/promises';
 import test, {type ExecutionContext} from 'ava';
 import React, {useEffect} from 'react';
@@ -13,6 +13,7 @@ import {
 } from '../src/index.js';
 import {useStdinContext} from '../src/hooks/use-stdin.js';
 import {type RenderOptions} from '../src/render.js';
+import Input from './helpers/create-readable-stdin.js';
 import createStdout from './helpers/create-stdout.js';
 
 const query = '\u001B[?6n';
@@ -23,9 +24,11 @@ const until = async (predicate: () => boolean) => {
 	while (!predicate()) {
 		if (Date.now() >= deadline)
 			throw new Error('Timed out waiting for observable terminal state');
+		// eslint-disable-next-line no-await-in-loop -- Each negotiation step depends on the preceding terminal state.
 		await yieldImmediate();
 	}
 };
+
 const setup = (
 	t: ExecutionContext,
 	config: {
@@ -52,12 +55,14 @@ const setup = (
 		config.onWrite?.(String(chunk), stdin);
 		return true;
 	};
+
 	const originalStderrWrite = stderr.write;
 	stderr.write = (chunk: string | Uint8Array) => {
 		originalStderrWrite.call(stderr, String(chunk));
 		config.onStderrWrite?.(String(chunk));
 		return true;
 	};
+
 	const inputs: string[] = [];
 	const pastes: string[] = [];
 	let external = (_text: string) => {};
@@ -70,9 +75,11 @@ const setup = (
 			const onInput = (text: string) => {
 				inputs.push(text);
 			};
+
 			const onPaste = (text: string) => {
 				pastes.push(text);
 			};
+
 			emitter.on('input', onInput);
 			emitter.on('paste', onPaste);
 			if (raw) setRawMode(true);
@@ -84,6 +91,7 @@ const setup = (
 		}, [raw, setRawMode, emitter]);
 		return children;
 	}
+
 	const view = (node: React.ReactNode, raw = config.raw ?? true) => (
 		<App raw={raw}>{node}</App>
 	);
@@ -113,14 +121,20 @@ const setup = (
 		pastes,
 		instance,
 		exit,
-		update: (node: React.ReactNode, raw?: boolean) =>
-			instance.rerender(view(node, raw)),
-		external: (text: string) => external(text),
-		externalError: (text: string) => externalError(text),
+		update(node: React.ReactNode, raw?: boolean) {
+			instance.rerender(view(node, raw));
+		},
+		external(text: string) {
+			external(text);
+		},
+		externalError(text: string) {
+			externalError(text);
+		},
 		waitForQuery: () => until(() => stdout.getWrites().includes(query)),
 		waitForProbe: () => until(() => stdout.getWrites().includes(probe)),
 	};
 };
+
 const support = (text: string, stdin: Input) => {
 	if (text === query) stdin.push('\u001B[?3;1R');
 	if (text === probe) stdin.push('\u001B[?3;2R');
@@ -164,6 +178,7 @@ test.serial(
 		h.stdin.push('2R');
 		const emoji = Buffer.from('⚡︎');
 		h.stdin.push(emoji.subarray(0, 2));
+		// eslint-disable-next-line unicorn/prefer-single-call -- Readable.push takes one chunk; separate calls exercise split UTF-8 decoding.
 		h.stdin.push(emoji.subarray(2));
 		await h.instance.waitUntilRenderFlush();
 		await until(() => h.inputs.join('').includes('⚡︎'));
@@ -255,7 +270,7 @@ for (const initial of ['\n⚡︎', '']) {
 
 test.serial('midline cursor position never gets a drawing probe', async t => {
 	const h = setup(t, {
-		onWrite: (text, stdin) => {
+		onWrite(text, stdin) {
 			if (text === query) stdin.push('\u001B[?3;8R');
 		},
 	});
@@ -278,15 +293,35 @@ for (const action of [
 			await h.waitForQuery();
 			h.stdin.push('\u001B[?3;1R');
 			await h.waitForProbe();
-			if (action === 'clear') h.instance.clear();
-			else if (action === 'unmount') h.instance.unmount();
-			else if (action === 'external') h.external('EXTERNAL ⚠️\n');
-			else if (action === 'resize') {
-				h.stdout.columns = 20;
-				h.stdout.emit('resize');
-			} else h.update(<Text>⚡︎</Text>, false);
-			if (action === 'unmount') await h.exit;
-			else await h.instance.waitUntilRenderFlush();
+			switch (action) {
+				case 'clear': {
+					h.instance.clear();
+					break;
+				}
+
+				case 'unmount': {
+					h.instance.unmount();
+					break;
+				}
+
+				case 'external': {
+					h.external('EXTERNAL ⚠️\n');
+					break;
+				}
+
+				case 'resize': {
+					h.stdout.columns = 20;
+					h.stdout.emit('resize');
+
+					break;
+				}
+
+				case 'raw-loss': {
+					h.update(<Text>⚡︎</Text>, false);
+				}
+			}
+
+			await (action === 'unmount' ? h.exit : h.instance.waitUntilRenderFlush());
 			const writes = h.stdout.getWrites();
 			t.true(
 				writes
@@ -321,7 +356,7 @@ for (const callbackWrite of [query, probe]) {
 				const events: string[] = [];
 				let runAction = () => {};
 				const h = setup(t, {
-					onWrite: (text, stdin) => {
+					onWrite(text, stdin) {
 						events.push(text);
 						if (text === callbackWrite) runAction();
 						if (text === query && callbackWrite === probe)
@@ -338,47 +373,91 @@ for (const callbackWrite of [query, probe]) {
 					events.push(`raw:${raw}`);
 					return originalSetRawMode(raw);
 				};
+
 				runAction = () => {
-					if (action === 'clear') h.instance.clear();
-					else if (action === 'stdout') h.external('EXTERNAL OUT\n');
-					else if (action === 'stderr') {
-						h.externalError('EXTERNAL ERR\n');
-					} else if (action === 'resize') {
-						h.stdout.columns = 20;
-						h.stdout.emit('resize');
-						events.push('resize-complete');
-					} else if (action === 'raw-loss') h.update(<Text>⚡︎</Text>, false);
-					else {
-						h.instance.unmount();
-						events.push(`readable:${h.stdin.listenerCount('readable')}`);
+					switch (action) {
+						case 'clear': {
+							h.instance.clear();
+							break;
+						}
+
+						case 'stdout': {
+							h.external('EXTERNAL OUT\n');
+							break;
+						}
+
+						case 'stderr': {
+							h.externalError('EXTERNAL ERR\n');
+
+							break;
+						}
+
+						case 'resize': {
+							h.stdout.columns = 20;
+							h.stdout.emit('resize');
+							events.push('resize-complete');
+
+							break;
+						}
+
+						case 'raw-loss': {
+							h.update(<Text>⚡︎</Text>, false);
+							break;
+						}
+
+						case 'unmount': {
+							h.instance.unmount();
+							events.push(`readable:${h.stdin.listenerCount('readable')}`);
+						}
 					}
 				};
 
-				if (action === 'unmount') await h.exit;
-				else await h.instance.waitUntilRenderFlush();
+				await (action === 'unmount'
+					? h.exit
+					: h.instance.waitUntilRenderFlush());
 
 				const frameIndex = events.findIndex(
 					(event, index) =>
 						index > events.indexOf(callbackWrite) && event.includes('⚡︎'),
 				);
 				t.true(frameIndex > events.indexOf(callbackWrite));
-				if (action === 'stdout')
-					t.true(events.indexOf('EXTERNAL OUT\n') > frameIndex);
-				else if (action === 'stderr')
-					t.true(events.indexOf('EXTERNAL ERR\n') > frameIndex);
-				else if (action === 'resize')
-					t.true(events.lastIndexOf('render') > frameIndex);
-				else if (action === 'raw-loss')
-					t.true(events.indexOf('raw:false') > frameIndex);
-				else if (action === 'unmount') {
-					t.true(events.indexOf('raw:false') > frameIndex);
-					t.true(events.includes('readable:1'));
-				} else {
-					const clearIndex = events.findIndex(
-						(event, index) => index > frameIndex && event.includes('\u001B[2K'),
-					);
-					t.true(clearIndex > frameIndex);
+				switch (action) {
+					case 'stdout': {
+						t.true(events.indexOf('EXTERNAL OUT\n') > frameIndex);
+						break;
+					}
+
+					case 'stderr': {
+						t.true(events.indexOf('EXTERNAL ERR\n') > frameIndex);
+						break;
+					}
+
+					case 'resize': {
+						t.true(events.lastIndexOf('render') > frameIndex);
+						break;
+					}
+
+					case 'raw-loss': {
+						t.true(events.indexOf('raw:false') > frameIndex);
+						break;
+					}
+
+					case 'unmount': {
+						t.true(events.indexOf('raw:false') > frameIndex);
+						t.true(events.includes('readable:1'));
+
+						break;
+					}
+
+					case 'clear': {
+						const clearIndex = events.findIndex(
+							(event, index) =>
+								index > frameIndex && event.includes('\u001B[2K'),
+						);
+						t.true(clearIndex > frameIndex);
+					}
 				}
+
 				if (action !== 'stdout' && action !== 'stderr')
 					t.is(events.filter(event => event.includes('⚡︎')).length, 1);
 			},
@@ -389,8 +468,7 @@ for (const callbackWrite of [query, probe]) {
 test.serial(
 	'reentrant empty replacement cannot bypass or abandon a Static reservation',
 	async t => {
-		let h!: ReturnType<typeof setup>;
-		h = setup(t, {
+		const h = setup(t, {
 			text: (
 				<>
 					<Static items={['STATIC']}>
@@ -399,7 +477,7 @@ test.serial(
 					<Text>⚡︎</Text>
 				</>
 			),
-			onWrite: (text, stdin) => {
+			onWrite(text, stdin) {
 				if (text === query) stdin.push('\u001B[?3;1R');
 				if (text === probe) {
 					h.update(null);
@@ -429,14 +507,14 @@ test.serial(
 test.serial(
 	'reentrant render during settlement publishes before queued lifecycle work',
 	async t => {
-		let h!: ReturnType<typeof setup>;
 		let updated = false;
-		h = setup(t, {
-			onWrite: text => {
+		const h = setup(t, {
+			onWrite(text) {
 				if (text === query) {
 					h.instance.clear();
 					h.external('AFTER CLEAR\n');
 				}
+
 				if (text.includes('⚡︎') && !updated) {
 					updated = true;
 					h.update(<Text>LATEST</Text>);
@@ -471,6 +549,7 @@ for (const action of ['raw-loss', 'unmount'] as const) {
 					h.instance.unmount();
 					await h.exit;
 				}
+
 				t.deepEqual(h.inputs, [pending]);
 				await yieldImmediate();
 				t.deepEqual(h.inputs, [pending]);
@@ -490,6 +569,7 @@ for (const action of ['raw-loss', 'unmount'] as const) {
 			h.instance.unmount();
 			await h.exit;
 		}
+
 		t.deepEqual(h.inputs, []);
 	});
 }
@@ -504,7 +584,7 @@ for (const callbackWrite of [query, probe]) {
 				async t => {
 					let runAction = () => {};
 					const h = setup(t, {
-						onWrite: (text, stdin) => {
+						onWrite(text, stdin) {
 							if (text === query && callbackWrite === probe)
 								stdin.push('\u001B[?3;1R');
 							if (text === callbackWrite) {
@@ -517,8 +597,10 @@ for (const callbackWrite of [query, probe]) {
 						if (action === 'raw-loss') h.update(<Text>⚡︎</Text>, false);
 						else h.instance.unmount();
 					};
-					if (action === 'unmount') await h.exit;
-					else await h.instance.waitUntilRenderFlush();
+
+					await (action === 'unmount'
+						? h.exit
+						: h.instance.waitUntilRenderFlush());
 					t.deepEqual(h.inputs, [pending]);
 					await yieldImmediate();
 					t.deepEqual(h.inputs, [pending]);
@@ -533,7 +615,7 @@ for (const callbackWrite of [query, probe]) {
 			async t => {
 				let runAction = () => {};
 				const h = setup(t, {
-					onWrite: (text, stdin) => {
+					onWrite(text, stdin) {
 						if (text === query && callbackWrite === probe)
 							stdin.push('\u001B[?3;1R');
 						if (text === callbackWrite) {
@@ -546,8 +628,10 @@ for (const callbackWrite of [query, probe]) {
 					if (action === 'raw-loss') h.update(<Text>⚡︎</Text>, false);
 					else h.instance.unmount();
 				};
-				if (action === 'unmount') await h.exit;
-				else await h.instance.waitUntilRenderFlush();
+
+				await (action === 'unmount'
+					? h.exit
+					: h.instance.waitUntilRenderFlush());
 				t.deepEqual(h.inputs, []);
 			},
 		);
@@ -606,10 +690,11 @@ test.serial(
 			});
 			return <Text>⚡︎</Text>;
 		}
+
 		const h = setup(t, {
 			raw: false,
 			text: <Keys />,
-			onWrite: (text, stdin) => {
+			onWrite(text, stdin) {
 				if (text === query) stdin.push('x\u001B[?3;1R');
 				if (text === probe) stdin.push('\u001B[?3;2Ry');
 			},
@@ -622,6 +707,7 @@ test.serial(
 test.serial(
 	'an initially empty tree negotiates when its first nonempty frame arrives',
 	async t => {
+		// eslint-disable-next-line react/jsx-no-useless-fragment -- An empty mounted tree is the subject of this test.
 		const h = setup(t, {text: <></>, onWrite: support});
 		await h.instance.waitUntilRenderFlush();
 		t.false(h.stdout.getWrites().includes(query));
@@ -653,7 +739,7 @@ test.serial(
 
 test.serial('unsupported same-position reply flushes plain output', async t => {
 	const h = setup(t, {
-		onWrite: (text, stdin) => {
+		onWrite(text, stdin) {
 			if (text === query || text === probe) stdin.push('\u001B[?3;1R');
 		},
 	});
@@ -665,7 +751,7 @@ test.serial('unsupported same-position reply flushes plain output', async t => {
 
 test.serial('query write failure fails open to the normal frame', async t => {
 	const h = setup(t, {
-		onWrite: text => {
+		onWrite(text) {
 			if (text === query) throw new Error('probe unavailable');
 		},
 	});
@@ -715,7 +801,7 @@ test.serial('capabilities belong to separate instances', async t => {
 	const supported = setup(t, {onWrite: support});
 	await supported.instance.waitUntilRenderFlush();
 	const unsupported = setup(t, {
-		onWrite: (text, stdin) => {
+		onWrite(text, stdin) {
 			if (text === query || text === probe) stdin.push('\u001B[?3;1R');
 		},
 	});
@@ -774,15 +860,18 @@ for (const incrementalRendering of [false, true]) {
 						incrementalRendering,
 					},
 				});
+				// eslint-disable-next-line no-await-in-loop -- Each negotiation step depends on the preceding terminal state.
 				await h.instance.waitUntilRenderFlush();
 				t.false(h.stdout.getWrites().includes(query));
 				h.stdin.push('\u001B[?7;9Rz');
+				// eslint-disable-next-line no-await-in-loop -- Each negotiation step depends on the preceding terminal state.
 				await until(() => h.inputs.length > 0);
 				t.deepEqual(
 					h.inputs,
 					incrementalRendering ? ['z'] : ['\u001B[?7;9R', 'z'],
 				);
 				h.instance.unmount();
+				// eslint-disable-next-line no-await-in-loop -- Each negotiation step depends on the preceding terminal state.
 				await h.exit;
 			}
 		},

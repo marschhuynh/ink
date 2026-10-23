@@ -236,6 +236,7 @@ function App({
 			stdin.unref();
 			inputParserRef.current.reset();
 		};
+
 		if (onInputReady) {
 			onInputReady(false, undefined, finishDisableRawMode);
 		} else {
@@ -366,6 +367,7 @@ function App({
 						}
 					});
 				}
+
 				return;
 			}
 

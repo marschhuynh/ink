@@ -1,8 +1,6 @@
 // Newly authored artifact-driven reconstruction tests, not recovered originals.
 import test from 'ava';
-import * as outputModule from '../src/output.js';
-
-const Output = outputModule.default;
+import Output, * as outputModule from '../src/output.js';
 
 test('reconstruction: output caches share measurements and bound FIFO retention', t => {
 	t.is(typeof outputModule.OutputCaches, 'function');
@@ -16,6 +14,7 @@ test('reconstruction: output caches share measurements and bound FIFO retention'
 		caches.measureWidestLine(`row-${index}`);
 		caches.getStringWidth(`cell-${index}`);
 	}
+
 	t.is(caches.widestLineWidths.size, 3073);
 	t.false(caches.widestLineWidths.has('a\n界x'));
 	t.is(caches.widths.size, 4096);

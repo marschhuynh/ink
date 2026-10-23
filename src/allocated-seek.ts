@@ -5,7 +5,7 @@ import sanitizeAnsi from './sanitize-ansi.js';
 
 export type SeekPart =
 	| {kind: 'control'; raw: string}
-	// width is allocated cells, not measured width. Each non-ASCII part is
+	// Width is allocated cells, not measured width. Each non-ASCII part is
 	// one complete grapheme with width >= 1; ASCII runs may be coalesced.
 	| {kind: 'text'; text: string; width: number; ascii: boolean};
 
@@ -64,6 +64,7 @@ const isControlIntroducer = (code: number): boolean =>
 
 const isAscii = (text: string): boolean => {
 	for (let index = 0; index < text.length; index++) {
+		// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 		if (text.charCodeAt(index) > 0x7f) {
 			return false;
 		}
@@ -81,11 +82,13 @@ const fail = (message: string): never => {
 };
 
 const isSgr = (raw: string): boolean => {
+	// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 	const start = raw.charCodeAt(0) === 0x9b ? 1 : 2;
 	return sgrBody.test(raw.slice(start));
 };
 
 const oscPayload = (raw: string): string => {
+	// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 	const start = raw.charCodeAt(0) === 0x9d ? 1 : 2;
 	if (raw.endsWith('\u001B\\')) {
 		return raw.slice(start, -2);
@@ -107,6 +110,7 @@ const isLinkClose = (raw: string): boolean => {
 };
 
 const sgrParams = (raw: string): string[] => {
+	// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 	const start = raw.charCodeAt(0) === 0x9b ? 1 : 2;
 	const body = raw.slice(start, -1);
 	return body.length === 0 ? [] : body.split(/[;:]/);
@@ -117,10 +121,7 @@ const isResetParam = (part: string): boolean =>
 
 const isOnlyReset = (raw: string): boolean => {
 	const params = sgrParams(raw);
-	return (
-		params.length === 0 ||
-		params.every(part => part === '' || isResetParam(part))
-	);
+	return params.every(part => part === '' || isResetParam(part));
 };
 
 const identityOf = (sgr: string, link: string, logical: string): string =>
@@ -134,6 +135,7 @@ const tokenize = (row: string): Array<ControlItem | TextToken> => {
 	const tokens: Array<ControlItem | TextToken> = [];
 	let index = 0;
 	while (index < row.length) {
+		// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 		const code = row.charCodeAt(index);
 		if (isControlIntroducer(code)) {
 			const control = readTerminalControl(row, index);
@@ -160,6 +162,7 @@ const tokenize = (row: string): Array<ControlItem | TextToken> => {
 
 		const start = index;
 		index++;
+		// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 		while (index < row.length && !isControlIntroducer(row.charCodeAt(index))) {
 			index++;
 		}

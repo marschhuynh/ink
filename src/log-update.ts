@@ -446,25 +446,29 @@ const createIncremental = (
 		const {rows} = stream as Writable & {rows?: number};
 		return typeof rows === 'number' && rows > 0 ? rows : undefined;
 	};
+
 	const resetAnchor = (): void => {
 		frameTopRow = undefined;
 		pendingAnchorQuery = false;
 	};
+
 	// All writes that can move the physical cursor between a query and its
 	// reply invalidate that reply; funnel them through one counter.
 	const trackedWrite = (
 		text: string,
-		callback?: (error?: Error | null) => void,
+		callback?: Parameters<Writable['write']>[2],
 	): void => {
 		if (callback) {
 			stream.write(text, callback);
 		} else {
 			stream.write(text);
 		}
+
 		if (pendingAnchorQuery) {
 			anchorWritesDuringQuery++;
 		}
 	};
+
 	// After a block of `lineCount` logical lines is written starting at the old
 	// block's top, the new block's top stays put unless the write scrolled the
 	// screen (a block taller than the viewport pulls its top above row 0).
@@ -473,8 +477,10 @@ const createIncremental = (
 		if (rows === undefined || frameTopRow === undefined) {
 			return;
 		}
+
 		frameTopRow = Math.max(0, Math.min(frameTopRow, rows - lineCount));
 	};
+
 	// A DECXCPR reply is meaningful only for the outstanding query and only if
 	// no write landed after the carrier (which would move the cursor elsewhere
 	// and make the answer stale).
@@ -482,6 +488,7 @@ const createIncremental = (
 		if (!pendingAnchorQuery) {
 			return;
 		}
+
 		pendingAnchorQuery = false;
 		if (
 			anchorWritesDuringQuery === anchorQueryWritesAtSend &&
@@ -492,6 +499,7 @@ const createIncremental = (
 			frameTopRow = row - previousLines.length;
 		}
 	};
+
 	// Returns a DECXCPR query to append to the upcoming frame write, or ''. The
 	// reply then reports the post-write cursor row = the block's bottom line.
 	const maybeArmAnchorQuery = (lineCount: number): string => {
@@ -501,30 +509,37 @@ const createIncremental = (
 			// already hold a maintained anchor.
 			return '';
 		}
+
 		// A committed cursor moves the post-write position to the caret, so the
 		// reply would describe the caret row, not the block bottom.
 		if (getActiveCursor() !== undefined) {
 			return '';
 		}
+
 		if (pendingAnchorQuery) {
 			if (anchorWritesDuringQuery === anchorQueryWritesAtSend) {
 				// Still within the carrier-write window; keep waiting.
 				return '';
 			}
+
 			// A later write landed and no reply arrived -- the query was lost.
 			pendingAnchorQuery = false;
 		}
+
 		if (anchorAttempts >= maxAnchorAttempts) {
 			return '';
 		}
+
 		anchorAttempts++;
 		pendingAnchorQuery = true;
 		return '\u001B[?6n';
 	};
+
 	// Call immediately after the carrier write so the snapshot includes it.
 	const sealAnchorQuery = (): void => {
 		anchorQueryWritesAtSend = anchorWritesDuringQuery;
 	};
+
 	// Absolute screen row of previousLines[0], when determinable. When the
 	// block covers the screen its top is implied by the bottom anchor. When
 	// the stream reports no row count (non-TTY / test doubles) there is no
@@ -535,9 +550,11 @@ const createIncremental = (
 		if (rows === undefined) {
 			return undefined;
 		}
+
 		if (previousLines.length >= rows) {
 			return Math.max(0, rows - previousLines.length);
 		}
+
 		return frameTopRow;
 	};
 
@@ -1207,6 +1224,7 @@ const createIncremental = (
 	render.noteCursorRow = (row: number) => {
 		noteAnchorRow(row);
 	};
+
 	render.hasPendingAnchorQuery = () => pendingAnchorQuery;
 	render.isCursorDirty = () => cursorDirty;
 	render.willRender = (str: string, context?: PaintContext) => {

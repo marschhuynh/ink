@@ -7,6 +7,7 @@ export type TerminalControl = {
 const consumeCsiBody = (text: string, start: number): number | undefined => {
 	let index = start;
 	while (index < text.length) {
+		// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 		const code = text.charCodeAt(index);
 		if (code < 0x30 || code > 0x3f) {
 			break;
@@ -16,6 +17,7 @@ const consumeCsiBody = (text: string, start: number): number | undefined => {
 	}
 
 	while (index < text.length) {
+		// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 		const code = text.charCodeAt(index);
 		if (code < 0x20 || code > 0x2f) {
 			break;
@@ -28,6 +30,7 @@ const consumeCsiBody = (text: string, start: number): number | undefined => {
 		return undefined;
 	}
 
+	// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 	const final = text.charCodeAt(index);
 	if (final < 0x40 || final > 0x7e) {
 		return undefined;
@@ -44,6 +47,7 @@ const consumeString = (
 ): number | undefined => {
 	let index = start + (c1Introducer ? 1 : 2);
 	while (index < text.length) {
+		// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 		const code = text.charCodeAt(index);
 		if (isOsc && code === 0x07) {
 			return index - start + 1;
@@ -56,6 +60,7 @@ const consumeString = (
 		if (
 			code === 0x1b &&
 			index + 1 < text.length &&
+			// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 			text.charCodeAt(index + 1) === 0x5c
 		) {
 			return index - start + 2;
@@ -72,6 +77,7 @@ const consumeEsc = (text: string, start: number): number | undefined => {
 		return undefined;
 	}
 
+	// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 	const next = text.charCodeAt(start + 1);
 	if (next === 0x5b) {
 		const body = consumeCsiBody(text, start + 2);
@@ -88,6 +94,7 @@ const consumeEsc = (text: string, start: number): number | undefined => {
 
 	let index = start + 1;
 	while (index < text.length) {
+		// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 		const code = text.charCodeAt(index);
 		if (code >= 0x20 && code <= 0x2f) {
 			index++;
@@ -123,6 +130,7 @@ export function readTerminalControl(
 		return undefined;
 	}
 
+	// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 	const code = text.charCodeAt(start);
 
 	if (code === 0x1b) {
@@ -131,6 +139,7 @@ export function readTerminalControl(
 			return undefined;
 		}
 
+		// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 		const next = text.charCodeAt(start + 1);
 		if (next === 0x5b) {
 			return token('csi', text, start, length);

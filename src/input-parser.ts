@@ -263,6 +263,7 @@ export type InputParser = {
 };
 
 const maxTerminalResponseLength = 64;
+// eslint-disable-next-line no-control-regex -- Match literal terminal protocol control bytes.
 const privateResponsePrefix = /^\u001B\[\?\d[\d;]*$/;
 
 export const createInputParser = ({
@@ -286,7 +287,9 @@ export const createInputParser = ({
 				let end = 0;
 				while (
 					end < input.length &&
+					// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 					(isCsiParameterByte(input.charCodeAt(end)) ||
+						// eslint-disable-next-line unicorn/prefer-code-point -- Scan UTF-16 code units to preserve source offsets and control-byte semantics.
 						isCsiIntermediateByte(input.charCodeAt(end)))
 				)
 					end++;
@@ -298,6 +301,7 @@ export const createInputParser = ({
 				);
 				discardingPrivateResponse = false;
 			}
+
 			if (
 				onTerminalResponse &&
 				privateResponsePrefix.test(pending) &&
@@ -310,6 +314,7 @@ export const createInputParser = ({
 				// attached to a truncated terminal reply. Valid late tails still drain.
 				pending = '';
 			}
+
 			const parsedInput = parseKeypresses(pending + input);
 			pending = parsedInput.pending;
 			if (!onTerminalResponse) return parsedInput.events;
@@ -320,9 +325,11 @@ export const createInputParser = ({
 				pending = '';
 				discardingPrivateResponse = true;
 			}
+
 			return parsedInput.events.filter(event => {
 				// Paste is an opaque application event, even when it contains replies.
 				if (typeof event !== 'string') return true;
+				// eslint-disable-next-line no-control-regex -- Match literal terminal protocol control bytes.
 				const cursor = /^\u001B\[\?(\d+);(\d+)R$/.exec(event);
 				if (cursor) {
 					if (event.length > maxTerminalResponseLength) return false;
@@ -336,8 +343,11 @@ export const createInputParser = ({
 					) {
 						onTerminalResponse({type: 'cursor-position', row, column});
 					}
+
 					return false;
 				}
+
+				// eslint-disable-next-line no-control-regex -- Match literal terminal protocol control bytes.
 				const kitty = /^\u001B\[\?(\d+)u$/.exec(event);
 				if (kitty) {
 					if (event.length > maxTerminalResponseLength) return false;
@@ -346,6 +356,7 @@ export const createInputParser = ({
 						onTerminalResponse({type: 'kitty-keyboard', flags});
 					return false;
 				}
+
 				return true;
 			});
 		},

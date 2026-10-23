@@ -587,5 +587,6 @@ const selectedRowTextChanged = (
 		})[0];
 		return span ? sliceSelectableCells(resolvedRow, span.x1, span.x2) : '';
 	};
+
 	return selectedText(rows.previous) !== selectedText(rows.next);
 };

@@ -154,6 +154,7 @@ const stylesEqual = (
 		return false;
 	}
 
+	// eslint-disable-next-line unicorn/no-for-loop -- Avoid iterator allocations in this per-cell style comparison.
 	for (let index = 0; index < a.length; index++) {
 		if (a[index] !== b[index]) {
 			return false;
@@ -178,7 +179,7 @@ const serializeRow = (chars: StyledChar[]): string => {
 	let active = first.styles;
 	for (let index = 1; index < chars.length; index++) {
 		const char = chars[index]!;
-		const styles = char.styles;
+		const {styles} = char;
 		if (styles !== active && !stylesEqual(styles, active)) {
 			output += ansiCodesToString(diffAnsiCodes(active, styles));
 		}
@@ -194,13 +195,13 @@ const serializeRow = (chars: StyledChar[]): string => {
 // Cache bounds: frame-stable line sets are small, but long sessions keep
 // producing distinct lines (scrolled-off transcript). FIFO-evict the oldest
 // quarter when full to bound memory while preserving temporal locality.
-const CACHE_CAP = 4096;
+const cacheCap = 4096;
 const boundedSet = <K, V>(map: Map<K, V>, key: K, value: V): void => {
-	if (!map.has(key) && map.size >= CACHE_CAP) {
+	if (!map.has(key) && map.size >= cacheCap) {
 		let removed = 0;
 		for (const oldest of map.keys()) {
 			map.delete(oldest);
-			if (++removed >= CACHE_CAP >> 2) {
+			if (++removed >= cacheCap / 4) {
 				break;
 			}
 		}
@@ -357,9 +358,11 @@ export default class Output {
 			styles: [],
 		};
 		for (let y = 0; y < this.height; y++) {
+			// eslint-disable-next-line unicorn/no-new-array -- Allocate a fixed-width row filled with the shared immutable space cell.
 			const row = new Array<StyledChar>(this.width).fill(spaceCell);
 			output.push(row);
 			if (needSelection) {
+				// eslint-disable-next-line unicorn/no-new-array -- Allocate and fill the fixed-width selection mask without per-cell callbacks.
 				mask.push(new Array<boolean>(this.width).fill(false));
 			}
 		}
@@ -392,14 +395,13 @@ export default class Output {
 
 					// If text is positioned outside of clipping area altogether,
 					// skip to the next operation to avoid unnecessary calculations
-					if (clipHorizontally) {
-						if (
-							x > clip.x2! ||
+					if (
+						clipHorizontally &&
+						(x > clip.x2! ||
 							(x < clip.x1! &&
-								this.caches.getWidestLine(text, clip.x1! - x) < clip.x1! - x)
-						) {
-							continue;
-						}
+								this.caches.getWidestLine(text, clip.x1! - x) < clip.x1! - x))
+					) {
+						continue;
 					}
 
 					if (clipVertically) {

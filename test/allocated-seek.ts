@@ -13,7 +13,7 @@ const closeLink = '\u001B]8;;\u001B\\';
 const reset = `${closeLink}${csi}0m`;
 
 const instrumentSegmenter = (t: ExecutionContext) => {
-	const segment = Intl.Segmenter.prototype.segment;
+	const {segment} = Intl.Segmenter.prototype;
 	let calls = 0;
 	let visited = 0;
 	const stub = sinon
@@ -353,7 +353,9 @@ test('line breaks are row boundaries and do not build cross-row graphemes', t =>
 	]);
 	// 7.7.5-alpha recovers invalid frame rows; prepareSeekRow stays strict.
 	t.deepEqual(
-		createSeekPreparer().prepareFrame('ok\n\u001B[2A', 20).map(row => row.logical),
+		createSeekPreparer()
+			.prepareFrame('ok\n\u001B[2A', 20)
+			.map(row => row.logical),
 		['ok', ''],
 	);
 });
@@ -381,7 +383,7 @@ test('unchanged source rows reuse tokenization and segmentation', t => {
 
 test('truecolor and ansi256 channels do not drop inherited SGR', t => {
 	const preparer = createSeekPreparer();
-	// chalk.hex('#ff0000') and chalk.rgb(255, 0, 0) both emit 38;2;255;0;0.
+	// Chalk.hex('#ff0000') and chalk.rgb(255, 0, 0) both emit 38;2;255;0;0.
 	const rgb = preparer.prepareFrame(
 		'\u001B[1m\u001B[38;2;255;0;0mhello\nworld',
 		20,

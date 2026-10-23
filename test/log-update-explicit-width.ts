@@ -539,6 +539,7 @@ test('clipped hidden suffixes never enter the hook', t => {
 		inputs.push(text);
 		return encode(text);
 	};
+
 	const sizes: number[] = [];
 	for (const length of [100, 10_000, 100_000]) {
 		const output = new Output({width: 10, height: 1});

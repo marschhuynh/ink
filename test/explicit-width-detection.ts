@@ -9,24 +9,28 @@ const query = '\u001B[?6n';
 const probe = '\u001B]66;w=1; \u001B\\\u001B[?6n\r';
 const setup = (t: ExecutionContext, reserve = true) => {
 	const clock = sinon.useFakeTimers();
-	t.teardown(() => clock.restore());
+	t.teardown(() => {
+		clock.restore();
+	});
 	const writes: string[] = [];
 	const results: boolean[] = [];
 	let reservations = 0;
 	const detector = new ExplicitWidthDetection({
 		getSize: () => ({columns: 80, rows: 24}),
-		write: text => {
+		write(text) {
 			writes.push(text);
 		},
-		reserve: () => {
+		reserve() {
 			reservations++;
 			return reserve;
 		},
-		onResult: supported => {
+		onResult(supported) {
 			results.push(supported);
 		},
 	});
-	t.teardown(() => detector.cancel());
+	t.teardown(() => {
+		detector.cancel();
+	});
 	return {clock, writes, results, detector, reservations: () => reservations};
 };
 
@@ -154,20 +158,22 @@ test.serial(
 	'synchronous replies settle only after the complete probe write returns',
 	t => {
 		const clock = sinon.useFakeTimers();
-		t.teardown(() => clock.restore());
+		t.teardown(() => {
+			clock.restore();
+		});
 		const events: string[] = [];
 		const detector = new ExplicitWidthDetection({
 			getSize: () => ({columns: 80, rows: 24}),
-			reserve: () => {
+			reserve() {
 				events.push('reserve');
 				return true;
 			},
-			write: text => {
+			write(text) {
 				events.push(text);
 				detector.accept({row: 3, column: text === query ? 1 : 2});
 				events.push('write returned');
 			},
-			onResult: supported => {
+			onResult(supported) {
 				events.push(`settled ${supported}`);
 			},
 		});
@@ -189,17 +195,16 @@ test.serial(
 	'reentrant cancellation remains pending until result publication completes',
 	t => {
 		const events: string[] = [];
-		let detector!: ExplicitWidthDetection;
-		detector = new ExplicitWidthDetection({
+		const detector = new ExplicitWidthDetection({
 			getSize: () => ({columns: 80, rows: 24}),
 			reserve: () => true,
-			write: text => {
+			write(text) {
 				events.push(text);
 				detector.cancel();
 				detector.onSettled(() => events.push(`published ${detector.settled}`));
 				events.push(`write pending ${detector.pending}`);
 			},
-			onResult: supported => {
+			onResult(supported) {
 				events.push(`result ${supported} settled ${detector.settled}`);
 			},
 		});
@@ -218,15 +223,17 @@ test.serial(
 	'query write failures settle fallback and release the deadline',
 	async t => {
 		const clock = sinon.useFakeTimers();
-		t.teardown(() => clock.restore());
+		t.teardown(() => {
+			clock.restore();
+		});
 		const results: boolean[] = [];
 		const detector = new ExplicitWidthDetection({
 			getSize: () => ({columns: 80, rows: 24}),
 			reserve: () => true,
-			write: () => {
+			write() {
 				throw new Error('query write failed');
 			},
-			onResult: result => {
+			onResult(result) {
 				results.push(result);
 			},
 		});
@@ -249,6 +256,7 @@ test('first-cell reservation accepts only rendition prefixes and printable initi
 	]) {
 		t.true(canOverwriteFirstCell(text), JSON.stringify(text));
 	}
+
 	for (const text of [
 		'',
 		'\nA',

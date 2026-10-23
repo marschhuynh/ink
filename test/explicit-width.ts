@@ -11,13 +11,13 @@ const osc = (width: number, text: string): string =>
 const supplementaryNoncharacters: string[] = [];
 for (let plane = 1; plane <= 16; plane++) {
 	supplementaryNoncharacters.push(
-		String.fromCodePoint((plane << 16) + 0xfffe),
-		String.fromCodePoint((plane << 16) + 0xffff),
+		String.fromCodePoint(plane * 65_536 + 0xff_fe),
+		String.fromCodePoint(plane * 65_536 + 0xff_ff),
 	);
 }
 
 const instrumentSegmenter = (t: ExecutionContext) => {
-	const segment = Intl.Segmenter.prototype.segment;
+	const {segment} = Intl.Segmenter.prototype;
 	let calls = 0;
 	let visited = 0;
 	const stub = sinon
@@ -142,8 +142,8 @@ test('BEL inside DCS/APC/PM/SOS is payload, not a terminator', t => {
 	]) {
 		const control = `${start}52;c;\u26A1\u0007still\u001B\\`;
 		t.is(
-			createExplicitWidthEncoder()(`${control}\u754c`),
-			`${control}${osc(2, '\u754c')}`,
+			createExplicitWidthEncoder()(`${control}\u754C`),
+			`${control}${osc(2, '\u754C')}`,
 		);
 	}
 });
@@ -243,7 +243,7 @@ test('payload and width bounds never truncate or split graphemes', t => {
 
 test('unusual Unicode clusters stay raw and never emit w=0', t => {
 	const encode = createExplicitWidthEncoder();
-	const loneSurrogate = String.fromCharCode(0xd800);
+	const loneSurrogate = '\uD800';
 	const emoji = '\u{1F600}';
 	t.is(encode('\u200D'), '\u200D');
 	t.is(encode('\u200F'), '\u200F');
@@ -363,7 +363,7 @@ test.serial('independent factories do not share cache state', t => {
 test.serial('row cache evicts FIFO after 256 unique Unicode rows', t => {
 	const encode = createExplicitWidthEncoder();
 	const rows = Array.from({length: 257}, (_, index) =>
-		String.fromCodePoint(0x4e00 + index),
+		String.fromCodePoint(0x4e_00 + index),
 	);
 	const segmenter = instrumentSegmenter(t);
 
@@ -386,7 +386,7 @@ test.serial(
 	t => {
 		const encode = createExplicitWidthEncoder();
 		const graphemes = Array.from({length: 1025}, (_, index) =>
-			String.fromCodePoint(0x4e00 + index),
+			String.fromCodePoint(0x4e_00 + index),
 		);
 		const segmenter = instrumentSegmenter(t);
 

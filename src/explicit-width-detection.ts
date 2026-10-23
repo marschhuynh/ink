@@ -15,12 +15,14 @@ export const canOverwriteFirstCell = (text: string): boolean => {
 		// Only rendition controls are safe here. Do not treat arbitrary CSI/OSC
 		// payloads as evidence that Ink will overwrite the reserved cell.
 		const prefix =
-			/^(?:\u001B\[[\d;:]*m|\u001B\]8;[^\u001B\u0007\r\n]*(?:\u001B\\|\u0007))/.exec(
+			// eslint-disable-next-line no-control-regex -- Match literal terminal protocol control bytes.
+			/^(?:\u001B\[[\d;:]*m|\u001B]8;[^\u001B\u0007\r\n]*(?:\u001B\\|\u0007))/.exec(
 				remaining,
 			);
 		if (!prefix) return false;
 		remaining = remaining.slice(prefix[0].length);
 	}
+
 	if (!/^[\p{L}\p{N}\p{P}\p{S}\p{Zs}]/u.test(remaining)) return false;
 	const first = new Intl.Segmenter(undefined, {granularity: 'grapheme'})
 		.segment(remaining)
@@ -33,6 +35,7 @@ export const canOverwriteFirstCell = (text: string): boolean => {
 export class ExplicitWidthDetection {
 	private phase:
 		'idle' | 'waiting' | 'first' | 'second' | 'settling' | 'settled' = 'idle';
+
 	private inputReady = false;
 	private firstRow = 0;
 	private timer?: ReturnType<typeof setTimeout>;
@@ -42,10 +45,12 @@ export class ExplicitWidthDetection {
 	private readonly replies: Position[] = [];
 	private readonly settlementCallbacks: Array<() => void> = [];
 	private resolveFinished!: () => void;
+	// eslint-disable-next-line @typescript-eslint/member-ordering -- This initializer assigns resolveFinished, so its field must be initialized first.
 	readonly finished = new Promise<void>(resolve => {
 		this.resolveFinished = resolve;
 	});
 
+	// eslint-disable-next-line @typescript-eslint/parameter-properties -- erasableSyntaxOnly forbids constructor parameter properties.
 	private readonly options: Options;
 
 	constructor(options: Options) {
@@ -69,6 +74,7 @@ export class ExplicitWidthDetection {
 			callback();
 			return;
 		}
+
 		this.settlementCallbacks.push(callback);
 	}
 
@@ -76,7 +82,9 @@ export class ExplicitWidthDetection {
 		if (this.phase !== 'idle') return;
 		this.phase = 'waiting';
 		this.deadline = Date.now() + 200;
-		this.timer = setTimeout(() => this.cancel(), 200);
+		this.timer = setTimeout(() => {
+			this.cancel();
+		}, 200);
 		this.queryIfReady();
 	}
 
@@ -93,11 +101,13 @@ export class ExplicitWidthDetection {
 			if (this.replies.length < 2) this.replies.push(position);
 			return;
 		}
+
 		if (this.phase !== 'first' && this.phase !== 'second') return;
 		if (this.expired()) {
 			this.cancel();
 			return;
 		}
+
 		const {columns, rows} = this.options.getSize();
 		const {row, column} = position;
 		if (
@@ -111,10 +121,12 @@ export class ExplicitWidthDetection {
 			this.cancel();
 			return;
 		}
+
 		if (this.phase === 'second') {
 			this.finish(row === this.firstRow && column === 2);
 			return;
 		}
+
 		if (
 			column !== 1 ||
 			columns < 2 ||
@@ -124,6 +136,7 @@ export class ExplicitWidthDetection {
 			this.cancel();
 			return;
 		}
+
 		this.firstRow = row;
 		this.phase = 'second';
 		this.send('\u001B]66;w=1; \u001B\\\u001B[?6n\r');
@@ -143,6 +156,7 @@ export class ExplicitWidthDetection {
 			this.cancel();
 			return;
 		}
+
 		this.phase = 'first';
 		this.send('\u001B[?6n');
 	}
@@ -156,11 +170,13 @@ export class ExplicitWidthDetection {
 		} finally {
 			this.writing = false;
 		}
+
 		if (this.deferredResult !== undefined) {
 			const result = this.deferredResult;
 			this.deferredResult = undefined;
 			this.publish(result);
 		}
+
 		while (this.replies.length > 0) this.accept(this.replies.shift()!);
 	}
 
@@ -173,6 +189,7 @@ export class ExplicitWidthDetection {
 			this.deferredResult = supported;
 			return;
 		}
+
 		this.publish(supported);
 	}
 

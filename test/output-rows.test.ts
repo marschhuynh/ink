@@ -275,7 +275,7 @@ for (const firstLine of ['', 'a', '\u26A1']) {
 test.serial(
 	'right clipping bounds segmentation independently of invisible suffix length',
 	t => {
-		const segment = Intl.Segmenter.prototype.segment;
+		const {segment} = Intl.Segmenter.prototype;
 		let visited = 0;
 		const stub = sinon
 			.stub(Intl.Segmenter.prototype, 'segment')
@@ -292,7 +292,9 @@ test.serial(
 				});
 				return segments;
 			});
-		t.teardown(() => stub.restore());
+		t.teardown(() => {
+			stub.restore();
+		});
 
 		for (const x of [0, -1]) {
 			for (const styled of [false, true]) {
@@ -358,7 +360,7 @@ for (const {width, height} of [
 	test.serial(
 		`fully-inside ANSI rows reuse complete geometry and styles: ${width}x${height}`,
 		t => {
-			const segment = Intl.Segmenter.prototype.segment;
+			const {segment} = Intl.Segmenter.prototype;
 			let visited = 0;
 			const stub = sinon
 				.stub(Intl.Segmenter.prototype, 'segment')
@@ -375,7 +377,9 @@ for (const {width, height} of [
 					});
 					return segments;
 				});
-			t.teardown(() => stub.restore());
+			t.teardown(() => {
+				stub.restore();
+			});
 
 			const line = Array.from(
 				{length: width},

@@ -2,11 +2,11 @@ import {setImmediate as yieldImmediate} from 'node:timers/promises';
 import EventEmitter from 'node:events';
 import React from 'react';
 import test, {type ExecutionContext} from 'ava';
-import {useFakeTimers, spy} from 'sinon';
+import {useFakeTimers as installFakeTimers, spy} from 'sinon';
 import parseKeypress from '../src/parse-keypress.js';
 import {render, Text} from '../src/index.js';
-import ReadableStdin from './helpers/create-readable-stdin.js';
 import {useStdinContext} from '../src/hooks/use-stdin.js';
+import ReadableStdin from './helpers/create-readable-stdin.js';
 
 const textEncoder = new TextEncoder();
 
@@ -653,7 +653,7 @@ const createKittyFixture = (
 	t: ExecutionContext,
 	onWrite?: (text: string, stdin: NodeJS.ReadStream) => void,
 ) => {
-	const clock = useFakeTimers({toFake: ['setTimeout', 'clearTimeout']});
+	const clock = installFakeTimers({toFake: ['setTimeout', 'clearTimeout']});
 	const {stdout, write} = createFakeStdout();
 	const stdin = createFakeStdin();
 	const inputs: string[] = [];
@@ -662,12 +662,14 @@ const createKittyFixture = (
 		onWrite?.(text, stdin);
 		return true;
 	};
+
 	function App() {
 		const {setRawMode, internal_eventEmitter: emitter} = useStdinContext();
 		React.useEffect(() => {
 			const onInput = (input: string) => {
 				inputs.push(input);
 			};
+
 			emitter.on('input', onInput);
 			setRawMode(true);
 			return () => {
@@ -677,6 +679,7 @@ const createKittyFixture = (
 		}, [setRawMode, emitter]);
 		return <Text>Hello</Text>;
 	}
+
 	const instance = render(<App />, {
 		stdout,
 		stdin,
@@ -750,6 +753,7 @@ test.serial(
 		const h = createKittyFixture(t);
 		await h.instance.waitUntilRenderFlush();
 		h.stdin.push(new Uint8Array([0xf0, 0x9f]));
+		// eslint-disable-next-line unicorn/prefer-single-call -- Readable.push takes one chunk; separate calls exercise split UTF-8 decoding.
 		h.stdin.push(new Uint8Array([0x92, 0xa9]));
 		await yieldImmediate();
 		await h.clock.tickAsync(225);
