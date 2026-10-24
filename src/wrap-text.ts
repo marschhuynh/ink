@@ -10,29 +10,38 @@ export const wrapTextCacheMax = 256;
 /**
  * Remove the whitespace before the first visible character of a wrapped row
  * while preserving any ANSI styling wrap-ansi re-emitted at the row start.
- * Returns the removed whitespace and the display text without it.
+ * Boundary whitespace may be split across styled spans (e.g. a space before
+ * a color code and another after the re-emitted code), so scanning continues
+ * across escape sequences and whitespace-only text tokens. Returns the
+ * removed whitespace and the display text without it.
  */
 const stripLeadingLayoutWhitespace = (
 	row: string,
 ): {removed: string; text: string} => {
-	let escapesEnd = 0;
+	let styledPrefix = '';
+	let removed = '';
+	let scanned = 0;
 
 	for (const token of tokenizeAnsi(row)) {
-		if (token.type === 'text') {
-			const whitespace = /^\s*/u.exec(token.value)![0];
+		scanned += token.value.length;
 
-			if (whitespace === '') {
-				break;
-			}
-
-			return {
-				removed: whitespace,
-				text:
-					row.slice(0, escapesEnd) + row.slice(escapesEnd + whitespace.length),
-			};
+		if (token.type !== 'text') {
+			styledPrefix += token.value;
+			continue;
 		}
 
-		escapesEnd += token.value.length;
+		const whitespace = /^\s*/u.exec(token.value)![0];
+		removed += whitespace;
+
+		if (whitespace.length < token.value.length) {
+			return {
+				removed,
+				text:
+					styledPrefix +
+					token.value.slice(whitespace.length) +
+					row.slice(scanned),
+			};
+		}
 	}
 
 	return {removed: '', text: row};
@@ -48,8 +57,19 @@ export const wrapTextWithContinuations = (
 	text: string,
 	maxWidth: number,
 	wrapType: Styles['textWrap'],
+	options?: {stripLeadingWhitespace?: boolean},
 ): WrappedText => {
-	const cacheKey = JSON.stringify([text, maxWidth, wrapType]);
+	// Rendering strips leading boundary whitespace from continuation rows;
+	// layout measurement must not, or the shrunken measured width would
+	// re-wrap the source at a narrower width and clip trailing rows. Both
+	// paths wrap identically, so row counts still match.
+	const stripLeadingWhitespace = options?.stripLeadingWhitespace ?? true;
+	const cacheKey = JSON.stringify([
+		text,
+		maxWidth,
+		wrapType,
+		stripLeadingWhitespace,
+	]);
 	const cachedText = cache.get(cacheKey);
 
 	if (cachedText) {
@@ -74,6 +94,11 @@ export const wrapTextWithContinuations = (
 					hard: true,
 					wordWrap: wrapType !== 'hard',
 				});
+
+				if (!stripLeadingWhitespace) {
+					return wrapped;
+				}
+
 				const rows = wrapped.split('\n');
 				for (const [index] of rows.entries()) {
 					if (index === 0) {
@@ -141,6 +166,9 @@ const wrapText = (
 	text: string,
 	maxWidth: number,
 	wrapType: Styles['textWrap'],
-): string => wrapTextWithContinuations(text, maxWidth, wrapType).text;
+): string =>
+	wrapTextWithContinuations(text, maxWidth, wrapType, {
+		stripLeadingWhitespace: false,
+	}).text;
 
 export default wrapText;

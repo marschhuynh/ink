@@ -35,6 +35,13 @@ const fixtures: Array<{
 		display: 'abcde\nfgh',
 	},
 	{source: 'abcd  efgh', width: 5, display: 'abcd\nefgh', wrap: 'hard'},
+	{source: 'aaaa\u3000abc', width: 5, display: 'aaaa\nabc'},
+	{source: 'aaaa\u3000abc', width: 5, display: 'aaaa\nabc', wrap: 'hard'},
+	{
+		source: 'abcde \u001B[31m fgh\u001B[39m',
+		width: 5,
+		display: 'abcde\nfgh',
+	},
 	{source: '日本語日本語', width: 5, display: '日本\n語日\n本語'},
 	{source: 'hello  world', width: 8, display: 'hello  w\norld', wrap: 'hard'},
 	{
