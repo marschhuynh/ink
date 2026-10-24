@@ -1,10 +1,42 @@
 import {stripVTControlCharacters} from 'node:util';
 import wrapAnsi from 'wrap-ansi';
 import cliTruncate from 'cli-truncate';
+import {tokenizeAnsi} from './ansi-tokenizer.js';
 import {type Styles} from './styles.js';
 import {type TextContinuation} from './text-selection.js';
 
 export const wrapTextCacheMax = 256;
+
+/**
+ * Remove the whitespace before the first visible character of a wrapped row
+ * while preserving any ANSI styling wrap-ansi re-emitted at the row start.
+ * Returns the removed whitespace and the display text without it.
+ */
+const stripLeadingLayoutWhitespace = (
+	row: string,
+): {removed: string; text: string} => {
+	let escapesEnd = 0;
+
+	for (const token of tokenizeAnsi(row)) {
+		if (token.type === 'text') {
+			const whitespace = /^\s*/u.exec(token.value)![0];
+
+			if (whitespace === '') {
+				break;
+			}
+
+			return {
+				removed: whitespace,
+				text:
+					row.slice(0, escapesEnd) + row.slice(escapesEnd + whitespace.length),
+			};
+		}
+
+		escapesEnd += token.value.length;
+	}
+
+	return {removed: '', text: row};
+};
 
 type WrappedText = {
 	text: string;
@@ -44,21 +76,35 @@ export const wrapTextWithContinuations = (
 				});
 				const rows = wrapped.split('\n');
 				for (const [index] of rows.entries()) {
-					// With trim:false wrap-ansi retains source spaces. Row capture trims
-					// their trailing portion, so restore exactly that portion on joining.
-					continuations.push(
-						index === 0
-							? undefined
-							: {
-									join: /\s*$/u.exec(
-										stripVTControlCharacters(rows[index - 1]!),
-									)![0],
-									start: 0,
-								},
-					);
+					if (index === 0) {
+						continuations.push(undefined);
+						continue;
+					}
+
+					// With trim:false wrap-ansi retains source spaces at wrap boundaries.
+					// Row capture trims trailing whitespace, and continuation rows must
+					// not render with leading whitespace, so `join` records exactly the
+					// whitespace removed at the boundary: the previous row's trailing
+					// portion plus this row's stripped leading portion.
+					const trailing = /\s*$/u.exec(
+						stripVTControlCharacters(rows[index - 1]!),
+					)![0];
+					const row = rows[index]!;
+
+					if (stripVTControlCharacters(row).trim() === '') {
+						// Whitespace-only rows have no visible content to shift: keep the
+						// row and its boundary whitespace exactly as wrap-ansi produced
+						// them, counting each source space once via the next row's join.
+						continuations.push({join: trailing, start: 0});
+						continue;
+					}
+
+					const {removed, text} = stripLeadingLayoutWhitespace(row);
+					continuations.push({join: trailing + removed, start: 0});
+					rows[index] = text;
 				}
 
-				return wrapped;
+				return rows.join('\n');
 			})
 			.join('\n');
 	}

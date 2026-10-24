@@ -25,7 +25,16 @@ const fixtures: Array<{
 		display: 'hello\nworld\n\n  code\n    next',
 	},
 	{source: 'hello  world', width: 8, display: 'hello\nworld'},
-	{source: 'abcde fgh', width: 5, display: 'abcde\n fgh'},
+	{source: 'abcde fgh', width: 5, display: 'abcde\nfgh'},
+	{source: 'abcd  efghij', width: 6, display: 'abcd\nefghij'},
+	{source: 'abcd   efghij', width: 6, display: 'abcd\n\nefghij'},
+	{source: 'abcd    efghijkl', width: 6, display: 'abcd\nefgh\nijkl'},
+	{
+		source: '\u001B[31mabcde fgh\u001B[39m',
+		width: 5,
+		display: 'abcde\nfgh',
+	},
+	{source: 'abcd  efgh', width: 5, display: 'abcd\nefgh', wrap: 'hard'},
 	{source: '日本語日本語', width: 5, display: '日本\n語日\n本語'},
 	{source: 'hello  world', width: 8, display: 'hello  w\norld', wrap: 'hard'},
 	{
